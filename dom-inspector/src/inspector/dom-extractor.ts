@@ -225,7 +225,7 @@ export class DOMExtractor {
     const classNames = getClassNames(el);
     const attrs = getAttributes(el);
     const text = (el.textContent || '').slice(0, 200);
-    const outerSnippet = el.outerHTML.slice(0, 500);
+    const outerSnippet = el.outerHTML.slice(0, 2000);
     const selector = generateSelector(el);
     const domPath = this.getDOMPath(el);
     const children = this.getDirectChildren(el);

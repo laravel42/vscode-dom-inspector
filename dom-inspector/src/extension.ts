@@ -101,6 +101,7 @@ async function openUrl(sidebarProvider: InspectorSidebarProvider) {
     { enableScripts: true, retainContextWhenHidden: true },
   );
   browserPanel.webview.html = getBrowserHtml(browserPanel.webview, proxyUrl, url);
+  sidebarProvider.setBrowserOpen(true);
 
   // Initialize BridgeChannel
   bridge = new BridgeChannel(browserPanel);
@@ -112,6 +113,7 @@ async function openUrl(sidebarProvider: InspectorSidebarProvider) {
     browserPanel = undefined;
     inspecting = false;
     stopProxy();
+    sidebarProvider.setBrowserOpen(false);
   });
 }
 
@@ -274,9 +276,15 @@ async function openSourceFile(
       preserveFocus: false,
     });
 
-    const lineText = doc.lineAt(lineIdx).text;
-    const range = new vscode.Range(lineIdx, 0, lineIdx, lineText.length);
-    editor.selection = new vscode.Selection(range.start, range.end);
+    // Find the closing tag to select the full element range
+    const endLine = findClosingTagLine(doc, lineIdx);
+
+    const startPos = new vscode.Position(lineIdx, 0);
+    const endLineText = doc.lineAt(endLine).text;
+    const endPos = new vscode.Position(endLine, endLineText.length);
+    const range = new vscode.Range(startPos, endPos);
+
+    editor.selection = new vscode.Selection(startPos, endPos);
     editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
 
     const decoration = vscode.window.createTextEditorDecorationType({
@@ -289,6 +297,68 @@ async function openSourceFile(
   } catch {
     // File may not exist or be unreadable
   }
+}
+
+/**
+ * Starting from a line with an opening tag, find the line with the matching
+ * closing tag by tracking bracket depth. Handles self-closing tags, JSX
+ * fragments, and multi-line elements.
+ */
+function findClosingTagLine(doc: vscode.TextDocument, startLine: number): number {
+  const startText = doc.lineAt(startLine).text;
+
+  // Self-closing tag on the same line: <input ... /> or <br />
+  if (/\/>\s*$/.test(startText)) {
+    return startLine;
+  }
+
+  // Extract the tag name from the opening line
+  const tagMatch = startText.match(/<([a-zA-Z][a-zA-Z0-9.]*)/);
+  if (!tagMatch) {
+    return startLine;
+  }
+
+  const tagName = tagMatch[1];
+  const maxScan = Math.min(doc.lineCount, startLine + 200);
+
+  // First check: is this a self-closing tag split across lines?
+  // Scan forward for /> before any closing tag
+  for (let i = startLine + 1; i < maxScan; i++) {
+    const line = doc.lineAt(i).text;
+    if (/\/>\s*$/.test(line)) {
+      return i;
+    }
+    // If we hit a closing tag or a new opening tag at the same indent, stop
+    if (new RegExp(`</${escapeRegex(tagName)}\\s*>`).test(line)) {
+      break;
+    }
+    // If we hit > without /, this tag's opening is done — look for closing tag
+    if (/[^/]>\s*$/.test(line) || /^[^<]*>\s*$/.test(line)) {
+      break;
+    }
+  }
+
+  // Paired tag: track depth to find matching close
+  let depth = 0;
+  for (let i = startLine; i < maxScan; i++) {
+    const lineText = doc.lineAt(i).text;
+
+    const opens = lineText.match(new RegExp(`<${escapeRegex(tagName)}[\\s>/]`, 'g')) || [];
+    const selfCloses = lineText.match(new RegExp(`<${escapeRegex(tagName)}[^>]*/\\s*>`, 'g')) || [];
+    const closes = lineText.match(new RegExp(`</${escapeRegex(tagName)}\\s*>`, 'g')) || [];
+
+    depth += opens.length - selfCloses.length - closes.length;
+
+    if (depth <= 0 && i >= startLine) {
+      return i;
+    }
+  }
+
+  return startLine;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, (ch) => '\\' + ch);
 }
 
 async function navigateSourceForSelector(selector: string): Promise<void> {

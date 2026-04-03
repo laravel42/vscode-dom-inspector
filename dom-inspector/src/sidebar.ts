@@ -98,6 +98,11 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: "debug_log", message });
   }
 
+  /** Show or hide the empty state based on browser panel status. */
+  setBrowserOpen(open: boolean): void {
+    this.postMessage({ type: "browser_state", open });
+  }
+
   /* ------------------------------------------------------------------ */
   /*  Internals                                                         */
   /* ------------------------------------------------------------------ */
@@ -685,6 +690,16 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
           line.textContent = ts + " " + (msg.message || "");
           logEl.appendChild(line);
           logEl.scrollTop = logEl.scrollHeight;
+        }
+        break;
+      }
+
+      case "browser_state": {
+        if (msg.open) {
+          emptyEl.style.display = "none";
+        } else {
+          emptyEl.style.display = "";
+          contentEl.style.display = "none";
         }
         break;
       }

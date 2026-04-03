@@ -147,7 +147,7 @@ var DOMExtractor = (function(){
   };
   DE.prototype.getFullData = function(el){
     var tag=el.tagName.toLowerCase(), id=el.id||null, cn=getClassNames(el), attrs=getAttributes(el);
-    var text=(el.textContent||'').slice(0,200), outerSnippet=el.outerHTML.slice(0,500);
+    var text=(el.textContent||'').slice(0,200), outerSnippet=el.outerHTML.slice(0,2000);
     var selector=generateSelector(el), domPath=this.getDOMPath(el), children=this._getDirectChildren(el);
     var boxModel=extractBoxModel(el), computedStyles=extractComputedStyles(el);
     return {selector:selector,tag:tag,id:id,classNames:cn,attrs:attrs,text:text,outerSnippet:outerSnippet,domPath:domPath,children:children,boxModel:boxModel,computedStyles:computedStyles,componentInfo:null};
