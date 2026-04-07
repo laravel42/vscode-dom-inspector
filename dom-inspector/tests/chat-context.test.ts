@@ -78,6 +78,9 @@ const elementArb: fc.Arbitrary<ElementData> = fc.record({
     boxSizing: fc.constant('border-box'),
   }),
   componentInfo: fc.constant(null),
+  xpath: fc.constant(''),
+  cssSelectorPath: fc.constant(''),
+  allComputedStyles: fc.constant({} as Record<string, string>),
 });
 
 const sourceArb: fc.Arbitrary<SourceLocation> = fc.record({

@@ -61,6 +61,22 @@ export interface SourceLocation {
 }
 
 // ---------------------------------------------------------------------------
+// Active CSS Styles
+// ---------------------------------------------------------------------------
+
+export interface ActiveStyleProperty {
+  property: string;
+  value: string;
+  enabled: boolean;
+  editable: boolean;
+}
+
+export interface ActiveStyleRule {
+  selector: string;
+  properties: ActiveStyleProperty[];
+}
+
+// ---------------------------------------------------------------------------
 // DOM Element Data
 // ---------------------------------------------------------------------------
 
@@ -101,8 +117,31 @@ export interface ElementData {
   boxModel: BoxModelData;
   computedStyles: ComputedStyleData;
 
+  // Paths
+  xpath: string;
+  cssSelectorPath: string;
+
+  // All computed styles
+  allComputedStyles: { all: Record<string, string>; nonDefault: Record<string, string> } | Record<string, string>;
+
   // Framework
   componentInfo: ComponentInfo | null;
+
+  // Active CSS styles (matching rule blocks)
+  activeStyles?: ActiveStyleRule[];
+}
+
+// ---------------------------------------------------------------------------
+// Full DOM Tree
+// ---------------------------------------------------------------------------
+
+export interface FullTreeNode {
+  tag: string;
+  id: string | null;
+  classNames: string[];
+  childCount: number;
+  selectorPath: string;
+  children: FullTreeNode[];
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +155,11 @@ export type BridgeMessage =
   | { type: 'highlight_element'; selector: string }
   | { type: 'scroll_to_element'; selector: string }
   | { type: 'get_children'; selector: string }
+  | { type: 'get_full_tree' }
+  | { type: 'inspect_node'; selector: string }
+  | { type: 'force_state'; selector: string; state: string; enabled: boolean }
+  | { type: 'set_style'; selector: string; property: string; value: string }
+  | { type: 'toggle_style'; selector: string; property: string; enabled: boolean }
   // Inspector Script → Extension Host
   | { type: 'element_hovered'; data: HoverData }
   | { type: 'element_picked'; data: ElementData }
@@ -123,6 +167,7 @@ export type BridgeMessage =
   | { type: 'children_response'; selector: string; children: ChildSummary[] }
   | { type: 'framework_detected'; framework: FrameworkType }
   | { type: 'inspector_ready' }
+  | { type: 'full_tree_response'; tree: FullTreeNode }
   // Bidirectional
   | { type: 'connection_lost' }
   | { type: 'connection_restored' };

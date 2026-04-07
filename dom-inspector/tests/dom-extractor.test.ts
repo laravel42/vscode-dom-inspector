@@ -40,6 +40,9 @@ describe('ElementData completeness', () => {
       boxSizing: fc.constantFrom('content-box', 'border-box'),
     }),
     componentInfo: fc.constant(null),
+    xpath: fc.constant(''),
+    cssSelectorPath: fc.constant(''),
+    allComputedStyles: fc.constant({} as Record<string, string>),
   });
 
   it('all required fields are defined and non-undefined', () => {

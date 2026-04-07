@@ -11,7 +11,7 @@ import { ElementData, SourceLocation } from './types';
  *   1. Source Map — componentInfo.sourceFile + sourceLine
  *   2. Framework Hook — search by ComponentName filename convention
  *   3. DOM Attribute — data-component, data-source, data-file, data-testid
- *   4. Grep Fallback — search by id, class names, text content
+ *   4. Grep Fallback — search by id, class names, text content, tag+attrs
  */
 export class SourceMapper {
   private static readonly STRATEGY_TIMEOUT_MS = 3000;
@@ -19,11 +19,13 @@ export class SourceMapper {
   private static readonly FRAMEWORK_EXTENSIONS = ['.tsx', '.jsx', '.vue', '.svelte'];
 
   private static readonly GREP_INCLUDE = [
-    '*.tsx', '*.jsx', '*.ts', '*.js', '*.vue', '*.svelte', '*.astro', '*.html',
+    '*.tsx', '*.jsx', '*.vue', '*.svelte', '*.astro', '*.html', '*.erb', '*.hbs',
+    '*.ejs', '*.pug', '*.blade.php', '*.twig', '*.njk', '*.mustache',
   ];
 
   private static readonly GREP_EXCLUDE_DIRS = [
-    'node_modules', '.git', 'dist', 'build',
+    'node_modules', '.git', 'dist', 'build', '.next', '.nuxt', '.svelte-kit',
+    'out', '.output', 'coverage', '.cache', '.turbo', 'vendor',
   ];
 
   private static readonly SOURCE_ATTRS = [
@@ -96,7 +98,6 @@ export class SourceMapper {
       const found = this.findFileRecursive(workspaceRoot, filename);
       if (found) {
         const relPath = path.relative(workspaceRoot, found);
-        // Try to find the actual line inside the file using element hints
         const line = this.findLineInFile(found, elementData);
         return {
           filePath: relPath,
@@ -128,7 +129,6 @@ export class SourceMapper {
         continue;
       }
 
-      // The attribute value might be a file path (possibly with :line suffix)
       const { filePart, linePart } = this.parseFileHint(value);
 
       const resolved = this.resolveFilePath(filePart, workspaceRoot);
@@ -140,7 +140,6 @@ export class SourceMapper {
         };
       }
 
-      // Try as a component name — search by filename convention
       for (const ext of SourceMapper.FRAMEWORK_EXTENSIONS) {
         const filename = `${filePart}${ext}`;
         const found = this.findFileRecursive(workspaceRoot, filename);
@@ -179,50 +178,90 @@ export class SourceMapper {
 
   private buildSearchTerms(elementData: ElementData): string[] {
     const terms: string[] = [];
+    const tag = elementData.tag;
+    const attrs = elementData.attrs || {};
 
-    // Search by id — most specific
+    // 1. id — most specific
     if (elementData.id) {
+      terms.push(`id="${elementData.id}"`);
+      terms.push(`id='${elementData.id}'`);
       terms.push(`"${elementData.id}"`);
-      terms.push(`'${elementData.id}'`);
-      terms.push(elementData.id);
     }
 
-    // Search by outerSnippet tag + key attributes (e.g. <button className="specific-thing")
-    // This catches JSX/TSX patterns better than class names alone
-    if (elementData.tag && elementData.classNames && elementData.classNames.length > 0) {
-      const specific = elementData.classNames.find(
-        (c) =>
-          c.length > 6 &&
-          !c.match(
-            /^(flex|grid|p-|m-|w-|h-|text-|bg-|border|rounded|gap|items|justify|min-|max-|overflow|relative|absolute|hidden|block|inline|container|wrapper|content|section|row|col)/,
-          ),
-      );
-      if (specific) {
-        // Search for the class in JSX className or HTML class attributes
-        terms.push(`"${specific}"`);
-        terms.push(`'${specific}'`);
+    // 2. Identifying attributes (data-testid, name, aria-label, role, href, src)
+    for (const attr of ['data-testid', 'data-id', 'data-cy', 'data-test', 'name', 'aria-label', 'role', 'for', 'htmlFor']) {
+      const val = attrs[attr];
+      if (val && val.length > 1 && val.length < 80) {
+        terms.push(`${attr}="${val}"`);
+        terms.push(`${attr}='${val}'`);
+        // JSX uses camelCase
+        if (attr === 'for') terms.push(`htmlFor="${val}"`);
       }
     }
 
-    // Search by data-testid or other identifying attributes
-    if (elementData.attrs) {
-      for (const attr of ['data-testid', 'data-id', 'name', 'aria-label']) {
-        const val = elementData.attrs[attr];
-        if (val && val.length > 2 && val.length < 60) {
-          terms.push(val);
+    // 3. href/src for links and images — very specific
+    if (attrs.href && attrs.href.length > 1 && attrs.href.length < 120 && !attrs.href.startsWith('http')) {
+      terms.push(`href="${attrs.href}"`);
+    }
+    if (attrs.src && attrs.src.length > 1 && attrs.src.length < 120 && !attrs.src.startsWith('http')) {
+      terms.push(`src="${attrs.src}"`);
+    }
+    if (attrs.placeholder) {
+      terms.push(attrs.placeholder);
+    }
+    if (attrs.alt && attrs.alt.length > 3) {
+      terms.push(attrs.alt);
+    }
+
+    // 4. Class names — try all non-trivial ones, longest first (more specific)
+    if (elementData.classNames && elementData.classNames.length > 0) {
+      const sorted = [...elementData.classNames]
+        .filter(c => c.length > 3 && !this.isTrivialClass(c))
+        .sort((a, b) => b.length - a.length);
+
+      for (const cls of sorted.slice(0, 5)) {
+        terms.push(`"${cls}"`);
+        terms.push(`'${cls}'`);
+      }
+
+      // Also try the full className string for exact matches in HTML class="..."
+      if (sorted.length >= 2) {
+        const combined = sorted.slice(0, 3).join(' ');
+        if (combined.length < 80) {
+          terms.push(combined);
         }
       }
     }
 
-    // Search by text content — only if short and specific
+    // 5. Tag + type for form elements
+    if (attrs.type && ['submit', 'checkbox', 'radio', 'password', 'email', 'tel', 'search', 'file', 'range', 'date', 'number'].includes(attrs.type)) {
+      terms.push(`type="${attrs.type}"`);
+    }
+
+    // 6. Text content — short, unique strings
     if (elementData.text) {
-      const trimmed = elementData.text.trim();
-      if (trimmed.length > 3 && trimmed.length < 40 && !trimmed.includes('\n')) {
+      const trimmed = elementData.text.trim().split('\n')[0].trim();
+      if (trimmed.length > 2 && trimmed.length < 60) {
         terms.push(trimmed);
       }
     }
 
+    // 7. Tag name for non-generic elements
+    if (tag && !['div', 'span', 'p', 'a', 'li', 'ul', 'ol', 'section', 'article', 'main', 'header', 'footer', 'nav'].includes(tag)) {
+      terms.push(`<${tag}`);
+    }
+
     return terms;
+  }
+
+  /** Returns true for utility/layout classes unlikely to appear in source. */
+  private isTrivialClass(cls: string): boolean {
+    // Tailwind-style single-purpose utilities
+    if (/^-?[a-z]{1,3}-\[/.test(cls)) return true; // arbitrary values like w-[200px]
+    if (/^(xs|sm|md|lg|xl|2xl):/.test(cls)) return true; // responsive prefixes
+    if (/^(hover|focus|active|group-hover|dark):/.test(cls)) return true; // state prefixes
+    // Common utility prefixes that are generated/not in source as identifiers
+    return /^(flex|grid|p[xytblr]?-|m[xytblr]?-|w-|h-|min-|max-|text-[a-z]{2,4}$|bg-|border$|rounded|gap-|items-|justify-|self-|place-|overflow-|relative$|absolute$|fixed$|sticky$|static$|hidden$|block$|inline$|inline-block$|inline-flex$|sr-only$|not-sr-only$|col-span|row-span|space-[xy]-|divide-|ring-|shadow$|opacity-|transition$|duration-|ease-|delay-|animate-|origin-|scale-|rotate-|translate-|skew-|transform$|cursor-|select-|resize-|appearance-|outline-|pointer-events-|float-|clear-|object-|order-|z-|font-[a-z]+$|leading-|tracking-|whitespace-|break-|truncate$|decoration-|underline$|overline$|line-through$|no-underline$)/.test(cls);
   }
 
   private grepForTerm(
@@ -230,13 +269,12 @@ export class SourceMapper {
     workspaceRoot: string,
   ): SourceLocation | null {
     try {
-      // Escape special regex chars for grep — avoid String.replace $& pattern
       const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, (ch) => '\\' + ch);
 
       const includes = SourceMapper.GREP_INCLUDE.map((p) => `--include='${p}'`).join(' ');
-      const excludes = SourceMapper.GREP_EXCLUDE_DIRS.map((d) => `--exclude-dir=${d}`).join(' ');
+      const excludes = SourceMapper.GREP_EXCLUDE_DIRS.map((d) => `--exclude-dir='${d}'`).join(' ');
 
-      const cmd = `grep -rn ${includes} ${excludes} -m 5 ${JSON.stringify(escaped)} .`;
+      const cmd = `grep -rn ${includes} ${excludes} -m 10 -F -- ${this.shellQuote(term)} .`;
 
       const out = execSync(cmd, {
         cwd: workspaceRoot,
@@ -245,39 +283,46 @@ export class SourceMapper {
       }).trim();
 
       const matches = out.split('\n').filter(Boolean);
-      if (matches.length > 0 && matches.length <= 10) {
-        // Prefer matches on markup lines (containing < or JSX attributes)
-        const markupPattern = /^\.\/.+?:\d+:.*(<[a-zA-Z]|className|class=|htmlFor|placeholder|href=|src=)/;
-        for (const match of matches) {
-          const m = match.match(/^\.\/(.+?):(\d+):/);
-          if (m && !m[1].includes('.min.') && !m[1].includes('dist/') && markupPattern.test(match)) {
-            return {
-              filePath: m[1],
-              line: parseInt(m[2], 10),
-              strategy: 'grep',
-            };
-          }
-        }
-        // Fall back to any non-minified match
-        for (const match of matches) {
-          const m = match.match(/^\.\/(.+?):(\d+):/);
-          if (m && !m[1].includes('.min.') && !m[1].includes('dist/')) {
-            return {
-              filePath: m[1],
-              line: parseInt(m[2], 10),
-              strategy: 'grep',
-            };
-          }
-        }
-        // Last resort: first match
-        const m = matches[0].match(/^\.\/(.+?):(\d+):/);
-        if (m) {
-          return {
-            filePath: m[1],
-            line: parseInt(m[2], 10),
-            strategy: 'grep',
-          };
-        }
+      if (matches.length === 0 || matches.length > 50) return null;
+
+      // Score each match
+      const scored: Array<{ file: string; line: number; score: number }> = [];
+      for (const match of matches) {
+        const m = match.match(/^\.\/(.+?):(\d+):(.*)/);
+        if (!m) continue;
+        const file = m[1];
+        const line = parseInt(m[2], 10);
+        const content = m[3];
+
+        // Skip minified, dist, compiled files
+        if (/\.(min\.|bundle\.)/.test(file)) continue;
+        if (/^(dist|build|\.next|out)\//.test(file)) continue;
+
+        let score = 0;
+        // Prefer markup lines
+        if (/<[a-zA-Z]|className|class=|htmlFor|placeholder|href=|src=/.test(content)) score += 10;
+        // Prefer JSX/TSX/Vue/Svelte files
+        if (/\.(tsx|jsx|vue|svelte)$/.test(file)) score += 5;
+        // Prefer src/ directory
+        if (file.startsWith('src/') || file.includes('/src/')) score += 3;
+        // Prefer shorter file paths (closer to root = more likely app code)
+        score += Math.max(0, 10 - file.split('/').length);
+        // Penalize test files
+        if (/\.(test|spec|stories)\.[jt]sx?$/.test(file)) score -= 10;
+        // Penalize config files
+        if (/\.(config|setup)\.[jt]sx?$/.test(file)) score -= 5;
+
+        scored.push({ file, line, score });
+      }
+
+      scored.sort((a, b) => b.score - a.score);
+
+      if (scored.length > 0) {
+        return {
+          filePath: scored[0].file,
+          line: scored[0].line,
+          strategy: 'grep',
+        };
       }
     } catch {
       // grep returns non-zero when no matches found, or on timeout
@@ -286,13 +331,15 @@ export class SourceMapper {
     return null;
   }
 
+  /** Shell-quote a string for use in grep arguments. */
+  private shellQuote(s: string): string {
+    return "'" + s.replace(/'/g, "'\\''") + "'";
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
-  /**
-   * Wraps a promise with a timeout. Returns null if the timeout fires first.
-   */
   private withTimeout<T>(
     promise: Promise<T | null>,
     ms: number,
@@ -311,23 +358,16 @@ export class SourceMapper {
     });
   }
 
-  /**
-   * Resolves a file path hint to an absolute path if the file exists.
-   * Tries the path as-is (absolute or relative to workspace root).
-   */
   private resolveFilePath(
     filePath: string,
     workspaceRoot: string,
   ): string | null {
-    // Try as absolute path
     if (path.isAbsolute(filePath) && fs.existsSync(filePath)) {
-      // Only accept if it's within the workspace
       if (filePath.startsWith(workspaceRoot)) {
         return filePath;
       }
     }
 
-    // Try relative to workspace root
     const resolved = path.resolve(workspaceRoot, filePath);
     if (fs.existsSync(resolved)) {
       return resolved;
@@ -338,10 +378,8 @@ export class SourceMapper {
 
   /**
    * Search inside a file for the best matching line using element hints.
-   * Prioritizes lines that look like JSX/HTML markup (contain < or className/class).
-   * Returns the line number (1-based) or 1 if nothing found.
    */
-  private findLineInFile(filePath: string, elementData: ElementData): number {
+  findLineInFile(filePath: string, elementData: ElementData): number {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       const lines = content.split('\n');
@@ -349,72 +387,47 @@ export class SourceMapper {
       const isMarkupLine = (line: string) =>
         /^\s*<|<[a-zA-Z]|className|class=|htmlFor|href=|src=|type=|placeholder=|value=|onChange|onClick/.test(line);
 
-      // Build needles as [pattern, markupOnly] pairs, most specific first
       const needles: Array<{ text: string; markupOnly: boolean }> = [];
 
-      // Most specific: tag + id combined (e.g. search for lines with both <input and "email")
-      if (elementData.tag && elementData.id) {
-        needles.push({ text: `id="${elementData.id}"`, markupOnly: true });
-        needles.push({ text: `id="${elementData.id}"`, markupOnly: false });
-      } else if (elementData.id) {
+      if (elementData.id) {
         needles.push({ text: `id="${elementData.id}"`, markupOnly: true });
         needles.push({ text: `id='${elementData.id}'`, markupOnly: true });
+        needles.push({ text: elementData.id, markupOnly: true });
       }
 
-      // Attributes that directly appear in JSX/HTML
-      if (elementData.attrs) {
-        const attrs = elementData.attrs as Record<string, string>;
-        if (attrs.placeholder) {
-          needles.push({ text: attrs.placeholder, markupOnly: true });
-        }
-        if (attrs.name) {
-          needles.push({ text: `name="${attrs.name}"`, markupOnly: true });
-        }
-        if (attrs.type && attrs.type !== 'text') {
-          needles.push({ text: `type="${attrs.type}"`, markupOnly: true });
-        }
-        if (attrs['aria-label']) {
-          needles.push({ text: attrs['aria-label'], markupOnly: true });
-        }
-        if (attrs['data-testid']) {
-          needles.push({ text: attrs['data-testid'], markupOnly: true });
-        }
-        if (attrs.href) {
-          needles.push({ text: attrs.href, markupOnly: true });
-        }
-        if (attrs.src) {
-          needles.push({ text: attrs.src, markupOnly: true });
+      const attrs = elementData.attrs || {};
+      for (const attr of ['data-testid', 'data-id', 'name', 'aria-label', 'placeholder', 'alt']) {
+        if (attrs[attr] && attrs[attr].length > 1) {
+          needles.push({ text: attrs[attr], markupOnly: true });
         }
       }
-
-      // Tag — useful but may match multiple elements
-      if (elementData.tag && elementData.tag !== 'div' && elementData.tag !== 'span') {
-        needles.push({ text: `<${elementData.tag}`, markupOnly: true });
+      if (attrs.href && !attrs.href.startsWith('http')) {
+        needles.push({ text: attrs.href, markupOnly: true });
       }
 
-      // Specific class names (long enough to be unique)
+      // Class names — longest first
       if (elementData.classNames) {
-        for (const cls of elementData.classNames) {
-          if (cls.length > 8) {
-            needles.push({ text: cls, markupOnly: true });
-          }
+        const sorted = [...elementData.classNames]
+          .filter(c => c.length > 3 && !this.isTrivialClass(c))
+          .sort((a, b) => b.length - a.length);
+        for (const cls of sorted.slice(0, 5)) {
+          needles.push({ text: cls, markupOnly: true });
         }
       }
 
-      // Generic tags last
-      if (elementData.tag === 'div' || elementData.tag === 'span') {
+      // Tag for non-generic elements
+      if (elementData.tag && !['div', 'span'].includes(elementData.tag)) {
         needles.push({ text: `<${elementData.tag}`, markupOnly: true });
       }
 
       // Text content
       if (elementData.text) {
-        const trimmed = elementData.text.trim().split('\n')[0];
-        if (trimmed.length > 3 && trimmed.length < 60) {
-          needles.push({ text: trimmed, markupOnly: true });
+        const trimmed = elementData.text.trim().split('\n')[0].trim();
+        if (trimmed.length > 2 && trimmed.length < 60) {
+          needles.push({ text: trimmed, markupOnly: false });
         }
       }
 
-      // Search: try each needle, respecting markupOnly preference
       for (const needle of needles) {
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].includes(needle.text)) {
@@ -424,25 +437,12 @@ export class SourceMapper {
           }
         }
       }
-
-      // Last resort: any line with the id
-      if (elementData.id) {
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].includes(elementData.id) && isMarkupLine(lines[i])) {
-            return i + 1;
-          }
-        }
-      }
     } catch {
       // File read error
     }
     return 1;
   }
 
-  /**
-   * Parses a file hint that may contain a `:line` suffix.
-   * e.g. "src/App.tsx:42" → { filePart: "src/App.tsx", linePart: 42 }
-   */
   private parseFileHint(value: string): { filePart: string; linePart: number | null } {
     const match = value.match(/^(.+):(\d+)$/);
     if (match) {
@@ -451,10 +451,6 @@ export class SourceMapper {
     return { filePart: value, linePart: null };
   }
 
-  /**
-   * Simple recursive file search by exact filename.
-   * Skips node_modules, .git, dist, build directories.
-   */
   private findFileRecursive(dir: string, filename: string): string | null {
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });

@@ -55,9 +55,21 @@ const elementDataArb = fc.record({
     boxSizing: fc.constantFrom('content-box', 'border-box'),
   }),
   componentInfo: fc.constant(null),
+  xpath: fc.string({ maxLength: 100 }),
+  cssSelectorPath: fc.string({ maxLength: 100 }),
+  allComputedStyles: fc.dictionary(fc.stringMatching(/^[a-z][a-z0-9-]*$/), fc.string({ maxLength: 20 })),
 });
 
 const selectorArb = fc.stringMatching(/^[a-z][a-z0-9.#> -]*$/);
+
+const fullTreeNodeArb: fc.Arbitrary<{ tag: string; id: string | null; classNames: string[]; childCount: number; selectorPath: string; children: never[] }> = fc.record({
+  tag: fc.stringMatching(/^[a-z][a-z0-9]*$/),
+  id: fc.option(fc.stringMatching(/^[a-z][a-z0-9-]*$/), { nil: null }),
+  classNames: fc.array(fc.stringMatching(/^[a-z][a-z0-9-]*$/), { maxLength: 3 }),
+  childCount: fc.nat(10),
+  selectorPath: fc.string({ maxLength: 50 }),
+  children: fc.constant([] as never[]),
+});
 
 const bridgeMessageArb: fc.Arbitrary<BridgeMessage> = fc.oneof(
   fc.constant({ type: 'start_inspector' as const }),
@@ -76,6 +88,8 @@ const bridgeMessageArb: fc.Arbitrary<BridgeMessage> = fc.oneof(
     (framework) => ({ type: 'framework_detected' as const, framework }),
   ),
   fc.constant({ type: 'inspector_ready' as const }),
+  fc.constant({ type: 'get_full_tree' as const }),
+  fullTreeNodeArb.map((tree) => ({ type: 'full_tree_response' as const, tree })),
   fc.constant({ type: 'connection_lost' as const }),
   fc.constant({ type: 'connection_restored' as const }),
 );

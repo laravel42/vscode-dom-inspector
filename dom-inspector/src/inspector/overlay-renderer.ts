@@ -128,6 +128,8 @@ export class OverlayRenderer {
   private marginDiv: HTMLDivElement | null = null;
   private tooltipDiv: HTMLDivElement | null = null;
   private initialized = false;
+  private currentEl: Element | null = null;
+  private scrollHandler = () => { if (this.currentEl) this.draw(this.currentEl); };
 
   /** Create overlay DOM elements and append to document.documentElement. */
   init(): void {
@@ -148,6 +150,7 @@ export class OverlayRenderer {
     document.documentElement.appendChild(this.tooltipDiv);
 
     this.initialized = true;
+    window.addEventListener('scroll', this.scrollHandler, true);
   }
 
   /**
@@ -156,6 +159,7 @@ export class OverlayRenderer {
    */
   draw(el: Element): void {
     this.ensureInitialized();
+    this.currentEl = el;
 
     // --- DOM READS (batched) ---
     const rect = el.getBoundingClientRect();
@@ -224,15 +228,28 @@ export class OverlayRenderer {
    * Highlight an element found by CSS selector.
    * Used for reverse sync (VSCode → browser).
    */
+  private highlightedEl: Element | null = null;
+
   drawHighlight(selector: string): void {
+    this.clear();
+    if (this.highlightedEl) {
+      (this.highlightedEl as HTMLElement).style.outline = '';
+      this.highlightedEl = null;
+    }
     const el = document.querySelector(selector);
     if (el) {
-      this.draw(el);
+      (el as HTMLElement).style.outline = '2px solid #1a73e8';
+      this.highlightedEl = el;
     }
   }
 
   /** Hide all overlay elements. */
   clear(): void {
+    this.currentEl = null;
+    if (this.highlightedEl) {
+      (this.highlightedEl as HTMLElement).style.outline = '';
+      this.highlightedEl = null;
+    }
     const divs = [this.contentDiv, this.paddingDiv, this.borderDiv, this.marginDiv, this.tooltipDiv];
     for (const div of divs) {
       if (div) {
@@ -243,6 +260,8 @@ export class OverlayRenderer {
 
   /** Remove all overlay DOM elements and reset state. */
   destroy(): void {
+    window.removeEventListener('scroll', this.scrollHandler, true);
+    this.currentEl = null;
     const divs = [this.contentDiv, this.paddingDiv, this.borderDiv, this.marginDiv, this.tooltipDiv];
     for (const div of divs) {
       if (div && div.parentNode) {

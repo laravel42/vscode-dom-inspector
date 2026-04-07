@@ -4,3 +4,4 @@ out/
 .env
 .kiro
 .vscode
+test-*

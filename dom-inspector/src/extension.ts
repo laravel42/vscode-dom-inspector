@@ -6,7 +6,7 @@ import { SourceMapper } from "./source-mapper";
 import { InspectorSidebarProvider } from "./sidebar";
 import { ComponentBreadcrumb } from "./breadcrumb";
 import { ChatContextBuilder } from "./chat-context";
-import { BridgeMessage, ElementData, ComponentPathEntry } from "./types";
+import { BridgeMessage, ElementData, ComponentPathEntry, FullTreeNode } from "./types";
 
 let browserPanel: vscode.WebviewPanel | undefined;
 let bridge: BridgeChannel | undefined;
@@ -18,25 +18,42 @@ const chatContext = new ChatContextBuilder();
 let connectionLostMsg: vscode.Disposable | undefined;
 let inspecting = false;
 
+const MAX_URL_HISTORY = 50;
+let urlHistory: string[] = [];
+let extensionContext: vscode.ExtensionContext;
+
 export function activate(context: vscode.ExtensionContext) {
+  extensionContext = context;
+  urlHistory = context.globalState.get<string[]>("domInspector.urlHistory", []);
   const output = vscode.window.createOutputChannel("DOM Inspector");
   output.appendLine("DOM Inspector activated");
 
   // --- Sidebar provider ---
   const sidebarProvider = new InspectorSidebarProvider({
     onNodeClicked(selector: string) {
-      // Send highlight + scroll back through bridge, then navigate source
       if (bridge) {
         bridge.sendToPage({ type: "highlight_element", selector });
         bridge.sendToPage({ type: "scroll_to_element", selector });
+        bridge.sendToPage({ type: "inspect_node", selector });
       }
-      // Attempt source navigation for the clicked node
       navigateSourceForSelector(selector);
     },
     onRequestChildren(selector: string) {
       if (bridge) {
         bridge.sendToPage({ type: "get_children", selector });
       }
+    },
+    onOpenUrl(url: string) {
+      openUrl(sidebarProvider, url);
+    },
+    onForceState(selector: string, state: string, enabled: boolean) {
+      if (bridge) bridge.sendToPage({ type: "force_state", selector, state, enabled });
+    },
+    onSetStyle(selector: string, property: string, value: string) {
+      if (bridge) bridge.sendToPage({ type: "set_style", selector, property, value });
+    },
+    onToggleStyle(selector: string, property: string, enabled: boolean) {
+      if (bridge) bridge.sendToPage({ type: "toggle_style", selector, property, enabled });
     },
   });
 
@@ -46,6 +63,11 @@ export function activate(context: vscode.ExtensionContext) {
       sidebarProvider,
     ),
   );
+
+  // Send initial URL history to sidebar when it becomes visible
+  sidebarProvider.onReady(() => {
+    sidebarProvider.updateUrlHistory(urlHistory);
+  });
 
   // --- Breadcrumb segment click handler ---
   breadcrumb.onSegmentClicked((component: ComponentPathEntry) => {
@@ -75,13 +97,23 @@ function getCwd(): string {
 // Open URL — create browser panel with proxy
 // ---------------------------------------------------------------------------
 
-async function openUrl(sidebarProvider: InspectorSidebarProvider) {
-  const url = await vscode.window.showInputBox({
-    prompt: "Enter URL to open",
-    placeHolder: "http://localhost:5173",
-    value: "http://localhost:5173",
-  });
+async function openUrl(sidebarProvider: InspectorSidebarProvider, directUrl?: string) {
+  let url = directUrl;
+  if (!url) {
+    url = await vscode.window.showInputBox({
+      prompt: "Enter URL to open",
+      placeHolder: "http://localhost:5173",
+      value: "http://localhost:5173",
+    });
+  }
   if (!url) return;
+
+  // Save to history
+  urlHistory = urlHistory.filter(u => u !== url);
+  urlHistory.unshift(url!);
+  if (urlHistory.length > MAX_URL_HISTORY) urlHistory.length = MAX_URL_HISTORY;
+  extensionContext.globalState.update("domInspector.urlHistory", urlHistory);
+  sidebarProvider.updateUrlHistory(urlHistory);
 
   sidebarProvider.log(`opening ${url}`);
   const proxyPort = await startProxy(url);
@@ -143,13 +175,20 @@ function wireUpBridge(
   br: BridgeChannel,
   sidebarProvider: InspectorSidebarProvider,
 ) {
+  let autoSelectPending = false;
+
   br.onMessage((msg: BridgeMessage) => {
     sidebarProvider.log(`bridge ← ${msg.type}`);
     switch (msg.type) {
       case "element_picked":
         inspecting = false;
         sidebarProvider.log(`picked: <${msg.data.tag}> ${msg.data.selector}`);
-        handleElementPicked(msg.data, sidebarProvider);
+        if (autoSelectPending) {
+          autoSelectPending = false;
+          sidebarProvider.updateElement(msg.data);
+        } else {
+          handleElementPicked(msg.data, sidebarProvider);
+        }
         break;
 
       case "element_hovered":
@@ -163,7 +202,7 @@ function wireUpBridge(
 
       case "children_response":
         sidebarProvider.log(`children: ${msg.children.length} for ${msg.selector}`);
-        sidebarProvider.updateDOMTree(msg.children);
+        sidebarProvider.childrenLoaded(msg.selector, msg.children);
         break;
 
       case "framework_detected":
@@ -174,7 +213,20 @@ function wireUpBridge(
         sidebarProvider.log("inspector ready (page loaded)");
         // Request root-level children to populate the DOM tree
         br.sendToPage({ type: "get_children", selector: "body" });
+        // Request full tree starting from <html>
+        br.sendToPage({ type: "get_full_tree" });
+        // Auto-select <body> to populate sidebar tabs
+        autoSelectPending = true;
+        br.sendToPage({ type: "inspect_node", selector: "body" });
         break;
+
+      case "full_tree_response": {
+        const tree = (msg as { type: 'full_tree_response'; tree: FullTreeNode }).tree;
+        function countNodes(n: FullTreeNode): number { let c = 1; for (const ch of n.children) c += countNodes(ch); return c; }
+        sidebarProvider.log(`full tree received: ${countNodes(tree)} nodes`);
+        sidebarProvider.updateFullTree(tree);
+        break;
+      }
 
       default:
         break;
@@ -228,8 +280,8 @@ async function handleElementPicked(
   if (element.children && element.children.length > 0) {
     sidebarProvider.updateDOMTree(element.children);
   }
-  if (element.selector) {
-    sidebarProvider.expandToNode(element.selector);
+  if (element.cssSelectorPath) {
+    sidebarProvider.expandToNode(element.cssSelectorPath);
   }
 
   // 4. Update breadcrumb
@@ -391,6 +443,9 @@ async function navigateSourceForSelector(selector: string): Promise<void> {
       height: "",
       boxSizing: "",
     },
+    xpath: "",
+    cssSelectorPath: "",
+    allComputedStyles: {},
     componentInfo: null,
   };
 
@@ -461,12 +516,13 @@ function getBrowserHtml(webview: vscode.Webview, proxyUrl: string, originalUrl: 
       // All BridgeMessage types that flow Extension Host → Inspector Script (page)
       const TO_PAGE_TYPES = [
         'start_inspector', 'stop_inspector',
-        'highlight_element', 'scroll_to_element', 'get_children'
+        'highlight_element', 'scroll_to_element', 'get_children', 'get_full_tree', 'inspect_node',
+        'force_state', 'set_style', 'toggle_style'
       ];
       // All BridgeMessage types that flow Inspector Script (page) → Extension Host
       const TO_HOST_TYPES = [
         'element_hovered', 'element_picked', 'element_pick_cancelled',
-        'children_response', 'framework_detected', 'inspector_ready'
+        'children_response', 'framework_detected', 'inspector_ready', 'full_tree_response'
       ];
 
       let isInspecting = false;
