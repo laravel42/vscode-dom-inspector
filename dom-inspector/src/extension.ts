@@ -1,11 +1,11 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as fs from "fs";
 import { startProxy, stopProxy } from "./proxy";
 import { BridgeChannel } from "./bridge";
 import { SourceMapper } from "./source-mapper";
 import { InspectorSidebarProvider } from "./sidebar";
 import { ComponentBreadcrumb } from "./breadcrumb";
-import { ChatContextBuilder } from "./chat-context";
 import { BridgeMessage, ElementData, ComponentPathEntry, FullTreeNode } from "./types";
 
 let browserPanel: vscode.WebviewPanel | undefined;
@@ -13,7 +13,6 @@ let bridge: BridgeChannel | undefined;
 
 const sourceMapper = new SourceMapper();
 const breadcrumb = new ComponentBreadcrumb();
-const chatContext = new ChatContextBuilder();
 
 let connectionLostMsg: vscode.Disposable | undefined;
 let inspecting = false;
@@ -21,12 +20,82 @@ let inspecting = false;
 const MAX_URL_HISTORY = 50;
 let urlHistory: string[] = [];
 let extensionContext: vscode.ExtensionContext;
+let currentPageUrl = "";
+
+/**
+ * Ensures the .kiro/settings/mcp.json includes the dom-inspector MCP server
+ * pointing to the bundled MCP server inside this extension.
+ */
+function ensureMcpConfig(context: vscode.ExtensionContext, output: vscode.OutputChannel): void {
+  const workspaceFolders = vscode.workspace.workspaceFolders;
+  if (!workspaceFolders || workspaceFolders.length === 0) {
+    return;
+  }
+
+  const mcpServerPath = path.join(context.extensionPath, "mcp-server", "index.js");
+
+  for (const folder of workspaceFolders) {
+    const kiroDir = path.join(folder.uri.fsPath, ".kiro", "settings");
+    const mcpConfigPath = path.join(kiroDir, "mcp.json");
+
+    try {
+      let config: { mcpServers?: Record<string, unknown> } = { mcpServers: {} };
+
+      if (fs.existsSync(mcpConfigPath)) {
+        const existing = JSON.parse(fs.readFileSync(mcpConfigPath, "utf-8"));
+        config = existing;
+        if (!config.mcpServers) {
+          config.mcpServers = {};
+        }
+        // Skip if dom-inspector is already configured
+        if (config.mcpServers["dom-inspector"]) {
+          // Update the path in case extension was updated
+          const entry = config.mcpServers["dom-inspector"] as Record<string, unknown>;
+          const args = entry.args as string[] | undefined;
+          if (args && args[0] !== mcpServerPath) {
+            args[0] = mcpServerPath;
+            fs.writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2) + "\n");
+            output.appendLine(`Updated dom-inspector MCP server path in ${mcpConfigPath}`);
+          }
+          continue;
+        }
+      }
+
+      // Add dom-inspector MCP server entry
+      config.mcpServers!["dom-inspector"] = {
+        command: "node",
+        args: [mcpServerPath],
+        env: {
+          DOM_INSPECTOR_PORT: "3100",
+        },
+        disabled: false,
+        autoApprove: [],
+      };
+
+      fs.mkdirSync(kiroDir, { recursive: true });
+      fs.writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2) + "\n");
+      output.appendLine(`Created MCP config at ${mcpConfigPath}`);
+    } catch (err) {
+      output.appendLine(`Failed to write MCP config: ${err}`);
+    }
+  }
+}
 
 export function activate(context: vscode.ExtensionContext) {
   extensionContext = context;
   urlHistory = context.globalState.get<string[]>("domInspector.urlHistory", []);
   const output = vscode.window.createOutputChannel("DOM Inspector");
   output.appendLine("DOM Inspector activated");
+
+  // Ensure MCP config exists for Kiro integration
+  ensureMcpConfig(context, output);
+
+  // Register chat participant to get language model access
+  const participant = vscode.chat.createChatParticipant("dom-inspector.chat", async (request, _context, response, _token) => {
+    response.markdown("Use the DOM Inspector sidebar to pick elements and ask questions about them.");
+  });
+  participant.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "inspect.svg");
+  context.subscriptions.push(participant);
 
   // --- Sidebar provider ---
   const sidebarProvider = new InspectorSidebarProvider({
@@ -51,6 +120,8 @@ export function activate(context: vscode.ExtensionContext) {
     },
     onSetStyle(selector: string, property: string, value: string) {
       if (bridge) bridge.sendToPage({ type: "set_style", selector, property, value });
+      // Publish style change to MCP bridge
+      publishStyleChange(selector, property, value);
     },
     onToggleStyle(selector: string, property: string, enabled: boolean) {
       if (bridge) bridge.sendToPage({ type: "toggle_style", selector, property, enabled });
@@ -84,6 +155,10 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("domInspector.openUrl", () => openUrl(sidebarProvider)),
     vscode.commands.registerCommand("domInspector.inspectElement", () => activateInspection(sidebarProvider)),
+    vscode.commands.registerCommand("domInspector.selectNode", () => sendMcpPromptToChat("select")),
+    vscode.commands.registerCommand("domInspector.analyzeNode", () => sendMcpPromptToChat("analyze")),
+    vscode.commands.registerCommand("domInspector.applyStyles", () => sendMcpPromptToChat("apply-styles")),
+    vscode.commands.registerCommand("domInspector.removeNode", () => sendMcpPromptToChat("remove")),
   );
 
   context.subscriptions.push({ dispose: () => breadcrumb.dispose() });
@@ -116,6 +191,7 @@ async function openUrl(sidebarProvider: InspectorSidebarProvider, directUrl?: st
   sidebarProvider.updateUrlHistory(urlHistory);
 
   sidebarProvider.log(`opening ${url}`);
+  currentPageUrl = url;
   const proxyPort = await startProxy(url);
   const proxyUrl = `http://127.0.0.1:${proxyPort}`;
   sidebarProvider.log(`proxy on :${proxyPort}`);
@@ -178,7 +254,9 @@ function wireUpBridge(
   let autoSelectPending = false;
 
   br.onMessage((msg: BridgeMessage) => {
-    sidebarProvider.log(`bridge ← ${msg.type}`);
+    if (msg.type !== "element_hovered") {
+      sidebarProvider.log(`bridge ← ${msg.type}`);
+    }
     switch (msg.type) {
       case "element_picked":
         inspecting = false;
@@ -261,12 +339,11 @@ async function handleElementPicked(
   // 1. Run SourceMapper
   const source = await sourceMapper.resolve(element, cwd);
   sidebarProvider.log(`source: ${source ? source.strategy + " → " + source.filePath + ":" + source.line : "not found"}`);
+  sidebarProvider.log(`componentInfo: ${element.componentInfo ? element.componentInfo.componentName + " (framework: " + element.componentInfo.framework + ", sourceFile: " + element.componentInfo.sourceFile + ")" : "null"}`);
 
   // 2. Open file side by side and highlight line
-  let snippet = "";
   if (source) {
     const fullPath = path.resolve(cwd, source.filePath);
-    snippet = chatContext.extractSnippet(fullPath, source.line);
     await openSourceFile(fullPath, source.line);
   } else {
     vscode.window.showWarningMessage(
@@ -275,7 +352,7 @@ async function handleElementPicked(
   }
 
   // 3. Update sidebar
-  sidebarProvider.updateElement(element);
+  sidebarProvider.updateElement(element, source ? source.filePath : undefined);
   sidebarProvider.log(`element has ${element.children?.length || 0} direct children`);
   if (element.children && element.children.length > 0) {
     sidebarProvider.updateDOMTree(element.children);
@@ -302,9 +379,209 @@ async function handleElementPicked(
   }
   breadcrumb.show(components);
 
-  // 5. Build and insert chat context
-  const contextMsg = chatContext.build(element, source, snippet);
-  await chatContext.insertIntoChat(contextMsg);
+  // 5. Publish to MCP bridge so Kiro can access via #selected-dom-node
+  publishToMcpBridge(element, source, sidebarProvider);
+}
+
+/**
+ * POST the picked element to the local MCP HTTP bridge.
+ * Reads the port from a well-known temp file written by the MCP server.
+ * Fire-and-forget — failures are logged but don't block the UI.
+ */
+function publishToMcpBridge(
+  element: ElementData,
+  source: { filePath: string; line: number } | null,
+  sidebarProvider?: InspectorSidebarProvider,
+): void {
+  const http = require("http");
+  const port = 3100;
+
+  const payload: Record<string, unknown> = {
+    url: currentPageUrl || "http://localhost",
+    tagName: element.tag,
+    id: element.id || undefined,
+    classes: element.classNames?.length ? element.classNames : undefined,
+    text: element.text || undefined,
+    selector: element.selector || undefined,
+    xpath: element.xpath || undefined,
+    attributes: element.attrs && Object.keys(element.attrs).length ? element.attrs : undefined,
+    outerHTML: element.outerSnippet || undefined,
+  };
+
+  if (element.componentInfo?.componentPath?.length) {
+    payload.nearbyContext = `Component: ${element.componentInfo.componentPath.join(" > ")}`;
+  }
+
+  const role = element.attrs?.role;
+  const ariaLabel = element.attrs?.["aria-label"];
+  if (role) payload.role = role;
+  if (ariaLabel) payload.ariaLabel = ariaLabel;
+
+  if (source) {
+    payload.title = `${source.filePath}:${source.line}`;
+  }
+
+  const body = JSON.stringify(payload);
+  sidebarProvider?.log(`mcp: POST :${port}/selection (${body.length} bytes)`);
+
+  const req = http.request(
+    {
+      hostname: "127.0.0.1",
+      port,
+      path: "/selection",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+      timeout: 2000,
+    },
+    (res: { statusCode?: number; on: Function }) => {
+      let data = "";
+      res.on("data", (chunk: string) => { data += chunk; });
+      res.on("end", () => {
+        sidebarProvider?.log(`mcp: response ${res.statusCode} ${data.slice(0, 100)}`);
+      });
+    },
+  );
+  req.on("error", (err: Error) => {
+    sidebarProvider?.log(`mcp: POST error — ${err.message}`);
+  });
+  req.write(body);
+  req.end();
+}
+
+/**
+ * POST a style change to the MCP bridge so [DOM] Apply styles can use it.
+ */
+function publishStyleChange(selector: string, property: string, value: string): void {
+  const http = require("http");
+  const port = 3100;
+
+  const body = JSON.stringify({ selector, property, newValue: value });
+  const req = http.request(
+    {
+      hostname: "127.0.0.1",
+      port,
+      path: "/style-change",
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+      timeout: 2000,
+    },
+    (res: { on: Function }) => { res.on("data", () => {}); },
+  );
+  req.on("error", () => {});
+  req.write(body);
+  req.end();
+}
+
+/**
+ * Fetch context from the MCP bridge and open Kiro chat with it.
+ */
+async function sendMcpPromptToChat(action: "select" | "analyze" | "apply-styles" | "remove"): Promise<void> {
+  const http = require("http");
+  const port = 3100;
+
+  let selection: any;
+  try {
+    const json: any = await new Promise((resolve, reject) => {
+      const req = http.get(
+        { hostname: "127.0.0.1", port, path: "/selection", timeout: 2000 },
+        (res: { on: Function }) => {
+          let data = "";
+          res.on("data", (chunk: string) => { data += chunk; });
+          res.on("end", () => { try { resolve(JSON.parse(data)); } catch { reject(new Error("bad json")); } });
+        },
+      );
+      req.on("error", reject);
+      req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+    });
+    selection = json?.selection;
+  } catch {
+    vscode.window.showWarningMessage("DOM Inspector MCP server is not running. Start it first.");
+    return;
+  }
+
+  if (!selection) {
+    vscode.window.showWarningMessage("No DOM element selected. Pick an element first (⌘⇧I).");
+    return;
+  }
+
+  const node = selection.node;
+  const styles: Array<{ property: string; oldValue: string; newValue: string }> = selection.styleChanges || [];
+
+  // Build context block
+  const lines: string[] = [];
+  lines.push(`**Element:** \`<${node.tagName}>\``);
+  if (node.selector) lines.push(`**Selector:** \`${node.selector}\``);
+  if (node.classes?.length) lines.push(`**Classes:** \`${node.classes.join(" ")}\``);
+  if (node.text) lines.push(`**Text:** "${node.text.slice(0, 100)}"`);
+  if (node.title) lines.push(`**Source:** ${node.title}`);
+  if (node.outerHTML) lines.push(`\`\`\`html\n${node.outerHTML.slice(0, 500)}\n\`\`\``);
+  const context = lines.join("\n");
+
+  let query = "";
+
+  switch (action) {
+    case "select":
+      query = context;
+      break;
+
+    case "analyze":
+      query = [
+        "Analyze this DOM element for accessibility, testability, and purpose:",
+        "",
+        context,
+        "",
+        "Provide: purpose, accessibility concerns, Playwright locator, Cypress locator, fragile patterns, and improvement suggestions.",
+      ].join("\n");
+      break;
+
+    case "apply-styles":
+      if (styles.length === 0) {
+        vscode.window.showWarningMessage("No style changes recorded. Edit styles in the DOM Inspector first.");
+        return;
+      }
+      const changeList = styles.map(
+        (s: any) => `- \`${s.property}\`: \`${s.oldValue || "(none)"}\` → \`${s.newValue}\``
+      ).join("\n");
+      query = [
+        "Apply these CSS style changes to the source code:",
+        "",
+        context,
+        "",
+        "### Style Changes",
+        changeList,
+        "",
+        "Convert to Tailwind classes if the project uses Tailwind. Only modify the listed properties.",
+      ].join("\n");
+      break;
+
+    case "remove":
+      query = [
+        "Remove this DOM element from the source code:",
+        "",
+        context,
+        "",
+        "Clean up unused imports/variables/styles. Note any layout adjustments needed.",
+      ].join("\n");
+      break;
+  }
+
+  try {
+    // Save clipboard, paste into chat, restore
+    const saved = await vscode.env.clipboard.readText();
+    await vscode.env.clipboard.writeText(query);
+    await vscode.commands.executeCommand("workbench.action.chat.open");
+    // Small delay to let the chat panel focus
+    await new Promise(r => setTimeout(r, 300));
+    await vscode.commands.executeCommand("editor.action.clipboardPasteAction");
+    // Restore original clipboard
+    await vscode.env.clipboard.writeText(saved);
+  } catch {
+    await vscode.env.clipboard.writeText(query);
+    vscode.window.showInformationMessage("DOM context copied to clipboard — paste it into the chat.");
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -71,6 +71,24 @@ export class SourceMapper {
       return null;
     }
 
+    // React's _debugSource points to where the JSX is *used* (e.g. <Hero /> in App.jsx),
+    // not where the component is *defined* (Hero.jsx). If the component has a dedicated
+    // definition file, prefer that over the usage site.
+    if (info.componentName) {
+      const sourceBaseName = path.basename(resolved, path.extname(resolved));
+      if (sourceBaseName !== info.componentName) {
+        // The source file doesn't match the component name — look for the definition file
+        for (const ext of ['.tsx', '.jsx', '.vue', '.svelte']) {
+          const defFile = this.findFileRecursive(workspaceRoot, `${info.componentName}${ext}`);
+          if (defFile) {
+            const relPath = path.relative(workspaceRoot, defFile);
+            const line = this.findLineInFile(defFile, elementData);
+            return { filePath: relPath, line, strategy: 'sourcemap' };
+          }
+        }
+      }
+    }
+
     return {
       filePath: path.relative(workspaceRoot, resolved),
       line: info.sourceLine,
@@ -167,7 +185,7 @@ export class SourceMapper {
     const searchTerms = this.buildSearchTerms(elementData);
 
     for (const term of searchTerms) {
-      const result = this.grepForTerm(term, workspaceRoot);
+      const result = this.grepForTerm(term, workspaceRoot, elementData);
       if (result) {
         return result;
       }
@@ -267,6 +285,7 @@ export class SourceMapper {
   private grepForTerm(
     term: string,
     workspaceRoot: string,
+    elementData: ElementData,
   ): SourceLocation | null {
     try {
       const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, (ch) => '\\' + ch);
@@ -311,6 +330,12 @@ export class SourceMapper {
         if (/\.(test|spec|stories)\.[jt]sx?$/.test(file)) score -= 10;
         // Penalize config files
         if (/\.(config|setup)\.[jt]sx?$/.test(file)) score -= 5;
+        // Penalize import/require lines — these reference the component, not define it
+        if (/^\s*(import\s|const\s.*=\s*require|export\s.*from\s)/.test(content)) score -= 20;
+        // Penalize JSX component usage like <Navbar /> or <Navbar> — prefer the definition file
+        if (/^\s*<[A-Z][a-zA-Z]*[\s/>]/.test(content.trim())) score -= 15;
+        // Boost component definition lines (function/const/class declarations)
+        if (/^\s*(export\s+)?(default\s+)?(function|const|class|let|var)\s+/.test(content) && !/from\s/.test(content)) score += 8;
 
         scored.push({ file, line, score });
       }
@@ -318,9 +343,39 @@ export class SourceMapper {
       scored.sort((a, b) => b.score - a.score);
 
       if (scored.length > 0) {
+        const best = scored[0];
+        const bestContent = (() => {
+          try {
+            return fs.readFileSync(path.join(workspaceRoot, best.file), 'utf-8')
+              .split('\n')[best.line - 1] || '';
+          } catch { return ''; }
+        })();
+
+        // If the best match is a JSX component usage like <Navbar /> or <Navbar>,
+        // try to resolve to the component's definition file instead.
+        const jsxMatch = bestContent.match(/^\s*<([A-Z][a-zA-Z0-9]*)[\s/>]/);
+        // If the best match is an import line, extract the component name
+        const importMatch = !jsxMatch
+          ? bestContent.match(/^\s*import\s+(\w+)\s+from\s/)
+          : null;
+
+        const compName = jsxMatch?.[1] || importMatch?.[1];
+        if (compName) {
+          for (const ext of ['.tsx', '.jsx', '.vue', '.svelte']) {
+            const found = this.findFileRecursive(workspaceRoot, `${compName}${ext}`);
+            if (found) {
+              const relPath = path.relative(workspaceRoot, found);
+              if (relPath !== best.file) {
+                const line = this.findLineInFile(found, elementData);
+                return { filePath: relPath, line, strategy: 'grep' as const };
+              }
+            }
+          }
+        }
+
         return {
-          filePath: scored[0].file,
-          line: scored[0].line,
+          filePath: best.file,
+          line: best.line,
           strategy: 'grep',
         };
       }
@@ -368,9 +423,37 @@ export class SourceMapper {
       }
     }
 
+    // Try direct resolution from workspace root
     const resolved = path.resolve(workspaceRoot, filePath);
     if (fs.existsSync(resolved)) {
       return resolved;
+    }
+
+    // Try stripping leading slash and resolving (Vite dev server paths like /src/...)
+    const stripped = filePath.replace(/^\/+/, '');
+    if (stripped !== filePath) {
+      const strippedResolved = path.resolve(workspaceRoot, stripped);
+      if (fs.existsSync(strippedResolved)) {
+        return strippedResolved;
+      }
+    }
+
+    // Try resolving inside subdirectories that contain package.json
+    // (handles monorepos / multi-project workspaces)
+    try {
+      const entries = fs.readdirSync(workspaceRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+        const subDir = path.join(workspaceRoot, entry.name);
+        if (fs.existsSync(path.join(subDir, 'package.json'))) {
+          const candidate = path.resolve(subDir, stripped || filePath);
+          if (fs.existsSync(candidate)) {
+            return candidate;
+          }
+        }
+      }
+    } catch {
+      // Permission errors
     }
 
     return null;
@@ -386,6 +469,9 @@ export class SourceMapper {
 
       const isMarkupLine = (line: string) =>
         /^\s*<|<[a-zA-Z]|className|class=|htmlFor|href=|src=|type=|placeholder=|value=|onChange|onClick/.test(line);
+
+      const isImportLine = (line: string) =>
+        /^\s*(import\s|const\s.*=\s*require|export\s.*from\s)/.test(line);
 
       const needles: Array<{ text: string; markupOnly: boolean }> = [];
 
@@ -431,6 +517,8 @@ export class SourceMapper {
       for (const needle of needles) {
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].includes(needle.text)) {
+            // Skip import/require lines — they reference components, not define them
+            if (isImportLine(lines[i])) continue;
             if (!needle.markupOnly || isMarkupLine(lines[i])) {
               return i + 1;
             }

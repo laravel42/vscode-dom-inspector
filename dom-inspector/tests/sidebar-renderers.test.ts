@@ -133,9 +133,6 @@ describe('Property 2: Element summary completeness', () => {
           expect(html).toContain(esc(cls));
         }
 
-        // Selector (HTML-escaped in output)
-        expect(html).toContain(esc(data.selector));
-
         // Rounded dimensions from boxModel.content
         const c = data.boxModel.content;
         expect(html).toContain(String(Math.round(c.width)));

@@ -243,6 +243,48 @@ class InspectorScript {
           });
         }
         break;
+
+      case 'set_style':
+        if (typeof msg.selector === 'string' && typeof msg.property === 'string') {
+          const target = document.querySelector(msg.selector) as HTMLElement | null;
+          if (target) {
+            target.style.setProperty(msg.property, msg.value);
+          }
+        }
+        break;
+
+      case 'toggle_style':
+        if (typeof msg.selector === 'string' && typeof msg.property === 'string') {
+          const toggleTarget = document.querySelector(msg.selector) as HTMLElement | null;
+          if (toggleTarget) {
+            if (msg.enabled) {
+              // Re-apply — we don't know the original value, so remove the override to let CSS take over
+              toggleTarget.style.removeProperty(msg.property);
+            } else {
+              // Disable by setting to initial
+              const current = getComputedStyle(toggleTarget).getPropertyValue(msg.property);
+              toggleTarget.style.setProperty(msg.property, current);
+              toggleTarget.style.setProperty(msg.property, 'initial');
+            }
+          }
+        }
+        break;
+
+      case 'force_state':
+        // Pseudo-class forcing (e.g. :hover, :focus) is not natively possible
+        // from page JS. We add/remove a class that mirrors the state.
+        if (typeof msg.selector === 'string' && typeof msg.state === 'string') {
+          const stateTarget = document.querySelector(msg.selector);
+          if (stateTarget) {
+            const stateClass = `kiro-force-${msg.state.replace(':', '')}`;
+            if (msg.enabled) {
+              stateTarget.classList.add(stateClass);
+            } else {
+              stateTarget.classList.remove(stateClass);
+            }
+          }
+        }
+        break;
     }
   }
 

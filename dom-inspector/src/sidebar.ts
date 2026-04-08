@@ -443,12 +443,12 @@ export const SIDEBAR_STYLE: string = `
   .as-color-input::-webkit-color-swatch-wrapper { padding: 0; }
   .as-color-input::-webkit-color-swatch { border: none; border-radius: 1px; }
   .as-add-row {
-    display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+    display: flex; align-items: center; gap: 4px; padding: 2px 8px;
     border-top: 1px solid var(--border); margin-top: 2px;
   }
   .as-add-input {
-    font: 11px/1.4 monospace; color: var(--text); background: var(--vscode-input-background, var(--bg-secondary));
-    border: 1px solid var(--border); border-radius: 3px; padding: 2px 6px; outline: none; flex: 1;
+    font: 10px/1.3 monospace; color: var(--text); background: var(--vscode-input-background, var(--bg-secondary));
+    border: 1px solid var(--border); border-radius: 2px; padding: 1px 4px; outline: none; flex: 1;
   }
   .as-add-input:focus { border-color: var(--accent); }
   .as-add-input::placeholder { color: var(--text-muted); opacity: 0.5; }
@@ -611,6 +611,7 @@ export const SIDEBAR_STYLE: string = `
   }
   .url-dropdown-item .url-item-icon svg { width: 14px; height: 14px; fill: currentColor; }
   .url-dropdown-item .match { color: var(--accent); font-weight: 500; }
+
 `;
 
 /**
@@ -672,10 +673,6 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
         if (this.callbacks.onToggleStyle) {
           this.callbacks.onToggleStyle(msg.selector as string, msg.property as string, msg.enabled as boolean);
         }
-      } else if (msg.type === "copy_ai_prompt") {
-        if (typeof msg.prompt === "string") {
-          vscode.env.clipboard.writeText(msg.prompt);
-        }
       }
     });
 
@@ -692,9 +689,9 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
   /* ------------------------------------------------------------------ */
 
   /** Render full element details in the sidebar. */
-  updateElement(data: ElementData): void {
+  updateElement(data: ElementData, sourceFile?: string): void {
     this.currentElement = data;
-    this.postMessage({ type: "update_element", data });
+    this.postMessage({ type: "update_element", data, sourceFile: sourceFile || "" });
   }
 
   /** Render / refresh the DOM tree with the given root children. */
@@ -1175,9 +1172,26 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
   }
 
   function rgbToHex(rgb) {
+    if (!rgb || rgb === 'transparent' || rgb === 'none') return '#000000';
+    // Already hex
+    if (rgb.charAt(0) === '#') {
+      // Expand shorthand #rgb to #rrggbb
+      if (rgb.length === 4) return '#' + rgb[1]+rgb[1]+rgb[2]+rgb[2]+rgb[3]+rgb[3];
+      return rgb.slice(0, 7);
+    }
+    // Try comma-separated: rgb(r, g, b) or rgba(r, g, b, a)
     var m = rgb.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
-    if (!m) return rgb.charAt(0) === '#' ? rgb : '#000000';
-    return '#' + ((1<<24)+(+m[1]<<16)+(+m[2]<<8)+ +m[3]).toString(16).slice(1);
+    // Try space-separated: rgb(r g b) or rgb(r g b / a)
+    if (!m) m = rgb.match(/rgba?\\(\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)/);
+    if (m) return '#' + ((1<<24)+(+m[1]<<16)+(+m[2]<<8)+ +m[3]).toString(16).slice(1);
+    // Use a canvas to resolve named colors and other formats
+    try {
+      var ctx = document.createElement('canvas').getContext('2d');
+      ctx.fillStyle = rgb;
+      var resolved = ctx.fillStyle; // Returns #rrggbb or #rrggbbaa
+      if (resolved.charAt(0) === '#') return resolved.slice(0, 7);
+    } catch(e) {}
+    return '#000000';
   }
 
   function emitStyle(prop, val) {
@@ -1309,30 +1323,6 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
         renderActiveStyles(currentActiveStyles);
       });
     });
-  }
-
-  function buildAIPrompt(prop, newValue, action) {
-    var d = currentElementData || {};
-    var lines = [];
-    lines.push('CSS Edit Request');
-    lines.push('');
-    lines.push('Element: ' + (d.cssSelectorPath || d.selector || 'unknown'));
-    if (d.xpath) lines.push('XPath: ' + d.xpath);
-    lines.push('Property: ' + prop.property);
-    lines.push('Previous value: ' + prop.value);
-    if (action === 'disable') {
-      lines.push('Action: Remove or comment out this declaration');
-    } else {
-      lines.push('New value: ' + newValue);
-    }
-    lines.push('');
-    lines.push('Instructions:');
-    lines.push('- Modify only the ' + prop.property + ' declaration');
-    lines.push('- Preserve formatting and surrounding declarations');
-    lines.push('- Maintain valid CSS');
-    lines.push('- Do not change unrelated selectors or properties');
-    lines.push('- Respect project conventions');
-    return lines.join('\\n');
   }
 
   function renderHTMLPanel(outerSnippet) {
@@ -1814,6 +1804,7 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
       }
     }
   });
+
 })();
 </script>
 </body>
