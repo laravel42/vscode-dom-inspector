@@ -1,0 +1,13 @@
+# Allowlist: the VSIX ships only the compiled extension, the bundled MCP
+# server, the webview assets and media. Everything else in the repo (source,
+# tests, docs, test apps, editor config) stays out. vsce gives "!" patterns
+# priority, so re-include exactly what ships rather than excluding afterwards.
+**
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!media/**
+!mcp-server/index.js
+!out/**/*.js
+!out/webview/*.{html,css}

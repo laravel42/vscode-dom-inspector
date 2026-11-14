@@ -1,0 +1,273 @@
+
+  :root {
+    --bg: var(--vscode-editor-background);
+    --bg-secondary: var(--vscode-sideBar-background);
+    --border: var(--vscode-panel-border);
+    --text: var(--vscode-editor-foreground);
+    --text-muted: var(--vscode-descriptionForeground);
+    --accent: var(--vscode-focusBorder);
+    --tag-color: #ff7b72;
+    --id-color: #d2a8ff;
+    --class-color: #79c0ff;
+    --attr-key: #79c0ff;
+    --attr-val: #a5d6ff;
+    --highlight-bg: rgba(88,166,255,0.12);
+    --green: #3fb950;
+    /* Type scale: one size for content, one for secondary text, one code font. */
+    --fs: 12px;
+    --fs-small: 11px;
+    --mono: monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font: var(--fs)/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--text);
+    background: var(--bg);
+    overflow-y: auto;
+    /* VS Code's default webview stylesheet sets body { padding: 0 20px }; the
+       "* { padding: 0 }" reset above loses to it, so clear the sides explicitly.
+       The bottom keeps room for .version-label. */
+    padding: 0 0 20px;
+  }
+  h3 {
+    font-size: var(--fs-small);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    padding: 8px 12px 4px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+  }
+  .section { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .empty-state { padding: 24px 12px; text-align: center; color: var(--text-muted); }
+
+
+
+
+  /* Box model diagram */
+  .box-model { margin-top: 8px; display: flex; justify-content: center; }
+  .box-model-diagram { position: relative; text-align: center; font: var(--fs-small)/1 var(--mono); width: 100%; max-width: 260px; }
+  .bm-layer { border: 1px dashed; padding: 8px 12px; border-radius: 3px; position: relative; }
+  .bm-margin { border-color: rgba(246,178,107,0.7); background: rgba(246,178,107,0.06); }
+  .bm-border { border-color: rgba(255,229,153,0.7); background: rgba(255,229,153,0.06); }
+  .bm-padding { border-color: rgba(147,196,125,0.7); background: rgba(147,196,125,0.06); }
+  .bm-content { border-color: rgba(111,168,220,0.7); background: rgba(111,168,220,0.1); min-height: 24px; display: flex; align-items: center; justify-content: center; }
+  .bm-label { position: absolute; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .bm-margin > .bm-label { top: 0; left: 4px; color: rgba(246,178,107,0.8); }
+  .bm-border > .bm-label { top: 0; left: 4px; color: rgba(255,229,153,0.8); }
+  .bm-padding > .bm-label { top: 0; left: 4px; color: rgba(147,196,125,0.8); }
+  .bm-vals { display: flex; justify-content: space-between; font-size: var(--fs-small); color: var(--text-muted); }
+  .bm-vals-v { display: flex; flex-direction: column; align-items: center; font-size: var(--fs-small); color: var(--text-muted); }
+  .bm-h { display: flex; align-items: center; gap: 4px; }
+  .bm-content-size { font-size: var(--fs); color: var(--text); font-weight: 600; }  /* not --accent: translucent in Cursor */
+
+
+
+
+  /* Active styles list */
+  .as-rule { margin-bottom: 4px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .as-selector { font: var(--fs)/1.5 var(--mono); color: var(--accent); padding: 2px 8px; user-select: text; }
+  .as-row {
+    display: grid; grid-template-columns: 18px auto 1fr; gap: 0 6px; align-items: center;
+    padding: 3px 8px; font: var(--fs)/1.5 var(--mono); border-bottom: 1px solid rgba(128,128,128,0.08);
+    transition: background 0.06s;
+  }
+  .as-row:hover { background: rgba(88,166,255,0.06); }
+  .as-row.disabled { opacity: 0.4; }
+  .as-row.disabled .as-val-wrap { text-decoration: line-through; }
+  .as-cb { width: 12px; height: 12px; margin: 0; cursor: pointer; accent-color: var(--accent); }
+  .as-prop { color: var(--attr-key); white-space: nowrap; }
+  .as-val-wrap { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+  .as-select {
+    font: var(--fs)/1.4 var(--mono); color: var(--text); background: var(--vscode-input-background, var(--bg-secondary));
+    border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; outline: none;
+    min-width: 0; flex: 1; max-width: 100%; cursor: pointer;
+    height: 24px; box-sizing: border-box;  /* same as .as-add-input */
+  }
+  .as-select:focus { border-color: var(--accent); }
+  .as-text {
+    font: var(--fs)/1.4 var(--mono); color: var(--text); background: transparent;
+    border: none; outline: none; padding: 0 2px; border-radius: 2px;
+    min-width: 0; flex: 1;
+  }
+  .as-text:focus { background: var(--vscode-input-background, var(--bg-secondary)); box-shadow: 0 0 0 1px var(--accent); }
+  .as-color-input { width: 16px; height: 16px; padding: 0; border: 1px solid rgba(128,128,128,0.3); border-radius: 2px; cursor: pointer; background: none; flex-shrink: 0; }
+  .as-color-input::-webkit-color-swatch-wrapper { padding: 0; }
+  .as-color-input::-webkit-color-swatch { border: none; border-radius: 1px; }
+  .as-add-row {
+    display: flex; align-items: center; gap: 4px; padding: 3px 8px;  /* same as .as-row */
+    border-top: 1px solid var(--border); margin-top: 2px;
+  }
+  .as-add-input {
+    /* Same box as the property editors (.as-select) so both rows line up. */
+    font: var(--fs)/1.4 var(--mono); color: var(--text); background: var(--vscode-input-background, var(--bg-secondary));
+    border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; outline: none; flex: 1; min-width: 0;
+    height: 24px; box-sizing: border-box;  /* same as .as-select */
+  }
+  .as-add-input:focus { border-color: var(--accent); }
+  .as-add-input::placeholder { color: var(--text-muted); opacity: 0.5; }
+  .ac-popup { position: fixed; z-index: 9999; background: var(--vscode-editorSuggestWidget-background, var(--bg-secondary)); border: 1px solid var(--vscode-editorSuggestWidget-border, var(--border)); border-radius: 3px; max-height: 160px; overflow-y: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+  .ac-popup::-webkit-scrollbar { width: 6px; }
+  .ac-popup::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.4); border-radius: 3px; }
+  .ac-item { padding: 0 6px; font: var(--fs-small)/16px var(--mono); color: var(--text); cursor: pointer; white-space: nowrap; }
+  .ac-item.active { background: var(--vscode-editorSuggestWidget-selectedBackground, var(--accent)); color: var(--vscode-editorSuggestWidget-selectedForeground, #fff); }
+
+  /* Computed styles */
+  .style-key { color: var(--attr-key); }
+  .style-val { color: var(--text); word-break: break-all; }
+  .color-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--border); vertical-align: middle; margin-right: 4px; }
+
+  /* DOM tree */
+  #dom-tree { font: var(--fs)/1.4 var(--mono); padding: 4px 0; }
+  .tree-node {
+    padding: 4px 0 4px calc(var(--depth, 0) * 16px + 8px);
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: flex; align-items: center; gap: 4px;
+    border-left: 2px solid transparent; transition: background 0.08s;
+  }
+  .tree-node:hover { background: rgba(88,166,255,0.06); }
+  .tree-node.highlighted {
+    background: rgba(88,166,255,0.22);
+    border-left-color: #58a6ff;
+    outline: 1px solid rgba(88,166,255,0.45);
+    outline-offset: -1px;
+  }
+  .tree-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; font-size: 10px; line-height: 1;
+    color: var(--text-muted); flex-shrink: 0; user-select: none;
+    border-radius: 3px; transition: background 0.1s, transform 0.15s;
+  }
+  .tree-toggle.open { transform: rotate(90deg); }
+  .tree-toggle:hover { background: rgba(110,118,129,0.15); }
+  .tree-label { display: inline; }
+  .tree-label .t-tag { color: var(--tag-color); }
+  .tree-label .t-id { color: var(--id-color); font-weight: 500; }
+  .tree-label .t-class { color: var(--class-color); opacity: 0.75; }
+  .tree-label .t-count { color: var(--text-muted); font-size: var(--fs-small); opacity: 0.6; }
+  .show-more {
+    padding: 4px 12px; color: var(--accent); cursor: pointer; font-size: var(--fs-small);
+  }
+  .show-more:hover { text-decoration: underline; }
+
+  /* DevTools tab bar */
+  .devtools-bar {
+    display: flex; align-items: center; gap: 0;
+    background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+    padding: 0; overflow-x: auto; flex-shrink: 0;
+    scrollbar-width: none;
+  }
+  .devtools-bar::-webkit-scrollbar { display: none; }
+  .dt-inspect-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 40px; align-self: stretch; flex-shrink: 0;  /* full bar height */
+    background: none; border: none; border-right: 1px solid var(--border);
+    color: var(--text-muted); cursor: pointer; transition: color 0.1s, background 0.1s;
+  }
+  .dt-inspect-btn:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+  /* Picking mode: full-strength icon on a blue fill. Not --accent (the theme's
+     focusBorder), which Cursor makes translucent. */
+  .dt-inspect-btn.active, .dt-inspect-btn.active:hover {
+    color: var(--text); background: rgba(88,166,255,0.28);
+  }
+  .dt-inspect-btn svg { width: 18px; height: 18px; fill: currentColor; }
+  .dt-tab {
+    padding: 10px 12px; font: var(--fs)/1 system-ui; color: var(--text-muted);
+    cursor: pointer; border: none; background: none; white-space: nowrap;
+    border-bottom: 2px solid transparent; transition: color 0.1s, border-color 0.1s;
+    /* Share the bar's full width; never shrink below the label (the bar scrolls). */
+    flex: 1 0 auto; text-align: center;
+  }
+  .dt-tab:hover { color: var(--text); }
+  /* Selected tab: full-strength text colour, bold, underlined in the same colour.
+     Not --accent: it maps to the theme's focusBorder, which many themes (Cursor's
+     included) make translucent or fully transparent, so the tab looked disabled. */
+  .dt-tab.active { color: var(--text); font-weight: 600; border-bottom-color: currentColor; }
+  /* Reserve each label's bold width so switching tabs doesn't shift the bar. */
+  .dt-tab::after {
+    content: attr(data-label); display: block; height: 0;
+    overflow: hidden; visibility: hidden; font-weight: 600;
+  }
+  .dt-panel { display: none; flex: 1; overflow-y: auto; }
+  .dt-panel.active { display: block; }
+  #tab-console.active { display: flex; flex-direction: column; }
+
+  /* Computed tab filter input */
+  .computed-filter-input {
+    display: block; width: 100%; padding: 4px 8px; margin-bottom: 8px;
+    font-size: var(--fs); font-family: inherit;
+    color: var(--text); background: var(--vscode-input-background, var(--bg-secondary));
+    border: 1px solid var(--border); border-radius: 4px; outline: none;
+    box-sizing: border-box;
+  }
+  .computed-filter-input:focus { border-color: var(--accent); }
+
+  /* All computed styles grid */
+  .all-styles-grid { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font: var(--fs)/1.5 var(--mono); }
+
+  /* Computed style accordions */
+  .cs-accordion { border-bottom: 1px solid var(--border); }
+  .cs-accordion-header {
+    display: flex; align-items: center; gap: 4px;
+    padding: 8px; cursor: pointer; user-select: none;
+    font-size: var(--fs); font-weight: 600; color: var(--text);
+    background: none; border: none; width: 100%; text-align: left;
+    transition: background 0.08s;
+  }
+  .cs-accordion-header:hover { background: rgba(88,166,255,0.06); }
+  .cs-accordion-arrow {
+    display: inline-block; width: 12px; font-size: 10px; color: var(--text-muted);
+    transition: transform 0.15s; flex-shrink: 0;
+  }
+  .cs-accordion.open > .cs-accordion-header .cs-accordion-arrow { transform: rotate(90deg); }
+  .cs-accordion-count { color: var(--text-muted); font-weight: 400; font-size: var(--fs-small); }
+  .cs-accordion-body { display: none; padding: 0 8px 4px 20px; }
+  .cs-accordion.open > .cs-accordion-body { display: block; }
+
+  /* URL omnibox — Chrome style */
+  .url-bar { position: relative; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .url-omni {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--vscode-input-background, var(--bg-secondary));
+    border: 1px solid var(--border); border-radius: 20px;
+    padding: 0 12px; height: 32px; transition: border-color 0.15s;
+  }
+  .url-omni:focus-within { border-color: var(--accent); }
+  .url-omni .url-icon {
+    flex-shrink: 0; width: 14px; height: 14px; color: var(--text-muted); display: flex; align-items: center;
+  }
+  .url-omni .url-icon svg { width: 14px; height: 14px; fill: currentColor; }
+  .url-omni input {
+    flex: 1; border: none; outline: none; background: transparent;
+    font: var(--fs)/1 var(--mono); color: var(--text); min-width: 0;
+  }
+  .url-omni input::placeholder { color: var(--text-muted); opacity: 0.6; }
+  .url-dropdown {
+    display: none; position: absolute; left: 12px; right: 12px; top: calc(100% - 2px);
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 0 0 8px 8px; max-height: 280px; overflow-y: auto;
+    z-index: 10; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .url-dropdown.visible { display: block; }
+  .url-dropdown-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px; font: var(--fs)/1.4 var(--mono); color: var(--text);
+    cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    transition: background 0.06s;
+  }
+  .url-dropdown-item:hover, .url-dropdown-item.active {
+    background: var(--highlight-bg);
+  }
+  .url-dropdown-item .url-item-icon {
+    flex-shrink: 0; width: 14px; height: 14px; color: var(--text-muted); display: flex; align-items: center;
+  }
+  .url-dropdown-item .url-item-icon svg { width: 14px; height: 14px; fill: currentColor; }
+  .url-dropdown-item .match { color: var(--accent); font-weight: 500; }
+
+  /* Build/version stamp, pinned to the bottom of the sidebar */
+  .version-label {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding: 2px 12px; font: var(--fs-small)/16px var(--mono); text-align: right;
+    color: var(--text-muted); background: var(--bg); border-top: 1px solid var(--border);
+    user-select: text; z-index: 10;
+  }

@@ -1,0 +1,7 @@
+{
+  // Compiles the extension to out/. The MCP server (src/mcp-server) is left to
+  // esbuild, which bundles it with its dependencies into mcp-server/index.js;
+  // tsconfig.json still type-checks it.
+  "extends": "./tsconfig.json",
+  "exclude": ["src/mcp-server"]
+}

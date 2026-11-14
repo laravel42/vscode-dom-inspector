@@ -1,70 +1,26 @@
 #!/usr/bin/env bash
+# Bump the version, build, package the VSIX and install it into your editor.
+#
+#   ./rebuild-all.sh            # patch bump
+#   ./rebuild-all.sh minor      # minor bump
+#   EDITOR_CLI=cursor ./rebuild-all.sh
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-FAILED=()
-BUMP="${1:-patch}"  # pass "minor" or "patch" as first arg, defaults to patch
+cd "$(dirname "$0")"
 
-bump_version() {
-  local pkg="$1"
-  local kind="$2"
-  local cur
-  cur=$(grep -o '"version": *"[^"]*"' "$pkg" | head -1 | grep -o '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*')
-  
-  IFS='.' read -r major minor patch <<< "$cur"
-  
-  if [ "$kind" = "minor" ]; then
-    minor=$((minor + 1))
-    patch=0
-  else
-    patch=$((patch + 1))
-  fi
+export BUMP="${1:-patch}"           # read by the "bump" script inside "package"
+EDITOR_CLI="${EDITOR_CLI:-kiro}"    # editor CLI used to install the VSIX: kiro, code, cursor…
 
-  local next="$major.$minor.$patch"
-  sed -i '' "s/\"version\": *\"$cur\"/\"version\": \"$next\"/" "$pkg"
-  echo "$next"
-}
+[ -d node_modules ] || pnpm install --frozen-lockfile
 
-for dir in "$ROOT"/*/; do
-  [ -f "$dir/package.json" ] || continue
+# Answer vsce's prompts with "y". Fed through process substitution, not a pipe:
+# `yes | …` gets SIGPIPE when vsce exits, and with pipefail that aborted the
+# script before the install step.
+pnpm run package < <(yes)
+version="$(node -p "require('./package.json').version")"
+vsix="dom-inspector-${version}.vsix"
+[ -f "$vsix" ] || { echo "✗ $vsix was not produced" >&2; exit 1; }
 
-  name="$(basename "$dir")"
-  echo "── $name ──"
-
-  cd "$dir"
-
-  # install deps if needed
-  [ -d node_modules ] || pnpm install --frozen-lockfile
-
-  # bump version
-  new_ver=$(bump_version package.json "$BUMP")
-  echo "→ version $new_ver ($BUMP)"
-
-  # build
-  if pnpm run build; then
-    echo "✓ $name built"
-  else
-    echo "✗ $name failed"
-    FAILED+=("$name")
-  fi
-
-  # package vsix and install if script exists
-  if grep -q '"package"' package.json; then
-    yes | pnpm run package || true
-    vsix=$(ls -t *.vsix 2>/dev/null | head -1)
-    if [ -n "$vsix" ]; then
-      kiro --install-extension "$vsix" --force
-      echo "✓ $name installed ($vsix)"
-    fi
-  fi
-
-  cd "$ROOT"
-  echo ""
-done
-
-if [ ${#FAILED[@]} -gt 0 ]; then
-  echo "Failed: ${FAILED[*]}"
-  exit 1
-fi
-
-echo "All extensions rebuilt."
+echo "→ installing $vsix with $EDITOR_CLI"
+"$EDITOR_CLI" --install-extension "$vsix" --force
+echo "✓ installed $vsix ($BUMP bump) with $EDITOR_CLI"

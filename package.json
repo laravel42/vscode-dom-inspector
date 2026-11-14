@@ -1,0 +1,201 @@
+{
+  "name": "dom-inspector",
+  "displayName": "DOM Inspector",
+  "description": "Pick DOM elements in an embedded browser, jump to their source, and hand them to any AI assistant (Claude Code, Cursor, Copilot, Kiro, Cline, Roo Code, Continue, MCP clients…)",
+  "version": "0.7.14",
+  "publisher": "L42",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Laravel42/vscode-ide-extensions"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "domInspector.openUrl",
+        "title": "DOM Inspector: Open URL"
+      },
+      {
+        "command": "domInspector.inspectElement",
+        "title": "DOM Inspector: Inspect Element"
+      },
+      {
+        "command": "domInspector.chooseBrowser",
+        "title": "DOM Inspector: Choose Browser…"
+      },
+      {
+        "command": "domInspector.selectNode",
+        "title": "[DOM] Send element to AI"
+      },
+      {
+        "command": "domInspector.analyzeNode",
+        "title": "[DOM] Analyze element (a11y, locators)"
+      },
+      {
+        "command": "domInspector.applyStyles",
+        "title": "[DOM] Apply style edits to source"
+      },
+      {
+        "command": "domInspector.removeNode",
+        "title": "[DOM] Remove element from source"
+      },
+      {
+        "command": "domInspector.chooseAiTarget",
+        "title": "DOM Inspector: Choose AI Assistant…"
+      },
+      {
+        "command": "domInspector.setupMcp",
+        "title": "DOM Inspector: Set Up MCP for AI Tools…"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "domInspector.openUrl",
+        "key": "ctrl+shift+u",
+        "mac": "cmd+shift+u"
+      },
+      {
+        "command": "domInspector.inspectElement",
+        "key": "ctrl+shift+i",
+        "mac": "cmd+shift+i"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "domInspector",
+          "title": "DOM Inspector",
+          "icon": "media/inspect.svg"
+        }
+      ]
+    },
+    "views": {
+      "domInspector": [
+        {
+          "type": "webview",
+          "id": "domInspector.inspectorSidebar",
+          "name": "DOM Inspector",
+          "icon": "media/inspect.svg",
+          "visibility": "collapsed"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DOM Inspector",
+      "properties": {
+        "domInspector.browser": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "integrated",
+            "cursor",
+            "simple",
+            "panel",
+            "external"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "The editor’s own browser when it has one (VS Code integrated browser, Cursor browser tab), otherwise the DOM Inspector panel.",
+            "VS Code’s integrated browser (a full Chromium view with its own DevTools).",
+            "Cursor’s browser tab.",
+            "VS Code’s Simple Browser.",
+            "DOM Inspector’s own panel, with a reload and inspect toolbar.",
+            "Your system browser (Chrome, Firefox…). The inspector still talks to the editor."
+          ],
+          "markdownDescription": "Where **Open URL** shows the page. Every option loads the page through DOM Inspector’s local proxy, so inspection, jump-to-source and Send to AI work the same everywhere."
+        },
+        "domInspector.ai.target": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "claude-code",
+            "cursor",
+            "kiro",
+            "copilot",
+            "cline",
+            "roo-code",
+            "continue",
+            "custom",
+            "clipboard"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Use the assistant you last chose with \"Send to…\", otherwise the first one installed (custom command, Claude Code, Cline, Roo Code, Continue, Kiro, Cursor, Copilot), otherwise the clipboard.",
+            "Claude Code extension: @-mentions the element snapshot in the chat input.",
+            "Cursor built-in chat: adds the snapshot file to the current chat.",
+            "Kiro agent: adds the snapshot file as #[[file:…]] context.",
+            "VS Code chat (GitHub Copilot): opens chat with the snapshot attached.",
+            "Cline: adds the snapshot to the chat input.",
+            "Roo Code: adds the snapshot to the chat context.",
+            "Continue: adds the snapshot file as context.",
+            "Runs domInspector.ai.customCommand with domInspector.ai.customArgs.",
+            "Copies the element context as Markdown."
+          ],
+          "markdownDescription": "Where **Send to AI** delivers picked elements. Everything else can use `custom`, the clipboard, the snapshot files in `.dom-inspector/`, or the MCP server."
+        },
+        "domInspector.ai.customCommand": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Command ID to run for the `custom` target, e.g. another AI extension’s “add file to chat” command."
+        },
+        "domInspector.ai.customArgs": {
+          "type": "array",
+          "default": [
+            "${file}"
+          ],
+          "markdownDescription": "Arguments for `customCommand`. Placeholders: `${file}` (the snapshot as a Uri), `${path}`, `${relativePath}`, `${markdown}`, `${prompt}`."
+        },
+        "domInspector.ai.customSelectSnapshot": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Open the snapshot and select all of it before running `customCommand`, for commands that read the active editor selection."
+        },
+        "domInspector.mcp.autoConfigure": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Register the bundled MCP server with this editor’s own AI on startup: Kiro (`.kiro/settings/mcp.json`), Cursor (`.cursor/mcp.json`) or VS Code (`.vscode/mcp.json`). Use **DOM Inspector: Set Up MCP for AI Tools…** for other clients."
+        },
+        "domInspector.mcp.port": {
+          "type": "number",
+          "default": 3100,
+          "minimum": 1024,
+          "maximum": 65535,
+          "markdownDescription": "Port of the MCP server’s local HTTP bridge (written into MCP configs as `DOM_INSPECTOR_PORT`)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p . --noEmit",
+    "compile": "tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/webview','out/webview',{recursive:true,filter:(f)=>!f.endsWith('.ts')})\"",
+    "watch": "tsc -watch -p tsconfig.build.json",
+    "bundle-mcp": "node -e \"require('esbuild').buildSync({entryPoints:['src/mcp-server/index.ts'],bundle:true,platform:'node',target:'node18',format:'cjs',outfile:'mcp-server/index.js',external:[]})\"",
+    "build": "pnpm typecheck && pnpm compile && pnpm bundle-mcp",
+    "test": "vitest --run",
+    "bump": "npm version ${BUMP:-patch} --no-git-tag-version",
+    "package": "pnpm bump && pnpm build && vsce package --allow-missing-repository --no-dependencies --baseContentUrl ."
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.95.0",
+    "@vitest/coverage-v8": "^4.1.2",
+    "@vscode/vsce": "^4.1.0",
+    "cors": "^2.8.6",
+    "esbuild": "^0.24.2",
+    "express": "^4.22.3",
+    "fast-check": "^4.6.0",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.2",
+    "zod": "^3.25.76"
+  }
+}
