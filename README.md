@@ -157,10 +157,15 @@ Open it from the **DOM Inspector** icon in the activity bar.
 
 | Tab | What you get |
 |---|---|
-| **Elements** | The full DOM tree from `<html>`, with `<head>`, `<script>`, `<link>`, `<style>` and `<noscript>` skipped. The first two levels are expanded, other branches load children on demand, and each level shows up to 500 nodes. Picking an element expands the tree down to it and highlights it. |
-| **Styles** | The CSS rules that match the picked element, inline `element.style` first. Rules come from regular and adopted stylesheets, including inside `@media`, `@supports` and `@layer`. Each property has a checkbox to toggle it and a type-aware editor: a colour picker plus text for colours, a dropdown for keyword properties (`display`, `position`, `flex-direction`…), and free text otherwise. You can add a property to any rule, with autocomplete over every CSS property the browser knows. Edits apply live in the page. |
+| **Elements** | The full DOM tree from `<html>`, with `<head>`, `<script>`, `<link>`, `<style>` and `<noscript>` skipped. The first two levels are expanded, other branches load children on demand, and each level shows up to 500 nodes. **Clicking a row** expands or collapses it and **selects the element**, exactly like picking it: it's outlined in the page, the Styles and Computed tabs update and its source opens (without a warning when a structural node such as `<body>` has none). The ▶ arrow only expands or collapses. Picking an element expands its ancestors and highlights its row. |
+| **Styles** | The CSS rules that match the picked element, inline `element.style` first. Rules come from regular and adopted stylesheets, including inside `@media`, `@supports` and `@layer`. Each property has a checkbox to toggle it and a type-aware editor: a colour picker plus text for colours, a dropdown for keyword properties (`display`, `position`, `flex-direction`…), and free text otherwise. You can add a property to any rule (property and value inputs under each rule), with autocomplete over every CSS property the browser knows. Edits apply live in the page. |
 | **Computed** | A box-model diagram, then computed styles grouped into accordions (Typography, Box Model, Layout & Positioning, Colours & Backgrounds, Visual Effects, Transitions & Animations, Generated Content & Lists, Specialised, Other). By default it shows only values that differ from a bare element of the same tag; **Show all** lists everything, and there's a text filter. |
 | **Console** | A timestamped log of what the extension is doing: bridge messages, source-mapper results, MCP POST results. It's the first place to look when something doesn't work. |
+
+Also in the sidebar:
+- **Inspect button** (left of the tabs): starts picking, and stays lit while picking is on, however it was started: the button, `Ctrl+Shift+I`, or the panel toolbar. It turns off when you pick, press Escape, use the right-click menu or the page reloads. Click it again to stop picking.
+- **Your session persists.** Switching to another view in the activity bar and back keeps the tree, the selected element, the Console and the current tab. If VS Code recreates the view (e.g. after you close and reopen it), they're restored.
+- **Version footer**: the bottom line shows the running build, e.g. `DOM Inspector v0.7.14`, with `(dev)` when it runs from source. Use it to check that a reinstall took effect.
 
 ### Component breadcrumb
 When a framework is detected, the status bar shows the component chain of the picked element (`$(symbol-class) App > Layout > Header > NavButton`). Clicking it opens a quick pick of the components; choosing the innermost one opens its source file when the framework reported one.
@@ -245,7 +250,7 @@ code   --install-extension dom-inspector-<version>.vsix --force
 cursor --install-extension dom-inspector-<version>.vsix --force
 ```
 
-Reload the window afterwards.
+Then **fully quit and restart the editor**. "Reload Window" or "Restart Extension Host" can keep running the previously installed build; check the version at the bottom of the DOM Inspector sidebar.
 
 ### From source
 
@@ -257,9 +262,35 @@ pnpm package                     # bump patch, type-check, tsc -> out/, esbuild 
 code --install-extension "dom-inspector-$(node -p "require('./package.json').version").vsix" --force
 ```
 
-Or run `./rebuild-all.sh`, which does the same and installs with `$EDITOR_CLI`.
+Or run `./rebuild-all.sh` (e.g. `EDITOR_CLI=cursor ./rebuild-all.sh`), which does the same and installs it with `$EDITOR_CLI`.
 
-To develop without packaging, open the repo in VS Code, run `pnpm build`, and press **F5** to start an Extension Development Host. You'll need to add a `launch.json` first, because `.vscode/` is git-ignored.
+### Run from source (no packaging, no restart)
+
+Press **F5** to open an **Extension Development Host** window running the extension straight from `out/`; after a rebuild, press `Ctrl+R` in that window to reload it. `.vscode/` is git-ignored, so create `.vscode/launch.json` once:
+
+```jsonc
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run DOM Inspector",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/test-react"],
+      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      "preLaunchTask": "build"
+    }
+  ]
+}
+```
+
+and a `build` task in `.vscode/tasks.json` that runs `pnpm build`. The second `args` entry is the folder the development window opens; point it at your app. Then:
+
+| You changed | Do |
+|---|---|
+| TypeScript in `src/` | `pnpm compile` (or keep `pnpm watch` running), then `Ctrl+R` in the development window |
+| `src/webview/*` | `pnpm compile` (copies the assets), `Ctrl+R`, then reload the inspected page |
+| `src/mcp-server/*` | `pnpm bundle-mcp`, then restart the `dom-inspector` MCP server in your AI client |
 
 ---
 
@@ -497,6 +528,7 @@ The suite uses vitest (some suites with fast-check), with `vscode` aliased to a 
 
 ### Debugging tips
 
+- The sidebar footer shows which build is running (`v<version>`, plus `(dev)` from source). Check it first when a change doesn't seem to apply.
 - The sidebar's **Console** tab logs every bridge message, source-mapper result and MCP POST.
 - **Output → DOM Inspector** shows activation and MCP-config messages.
 - **Developer: Open Webview Developer Tools** shows `[webview]` and `[dom-inspector]` console logs from the browser panel and the page.
@@ -511,11 +543,12 @@ The suite uses vitest (some suites with fast-check), with `vscode` aliased to a 
 |---|---|
 | Blank panel or `Proxy error: connect ECONNREFUSED` | The dev server isn't running at that URL. Start it and reload. |
 | Page loads but picking does nothing | The page isn't HTML served through the proxy (e.g. you navigated to an absolute URL on another origin). Reload from the toolbar, or reopen the URL. |
-| "Could not find source for <tag>" | None of the four strategies matched. Add a `data-source="path:line"` attribute or a unique id or test id, and check the source lives in the **first** workspace folder. |
+| "Could not find source for <tag>" | None of the five strategies matched. Add a `data-source="path:line"` attribute or a unique id or test id, and check the source lives in the **first** workspace folder. |
 | The wrong file opens | Without React 19 owner stacks, several files sharing the component's name (e.g. many `index.tsx`) are ranked by how well they contain the element, which can still guess wrong. Add a `data-source` hint. |
 | Nothing appears in the assistant after **Send to AI** | Check which assistant is used (**DOM Inspector: Choose AI Assistant…**) and the Console tab. Some chats only accept context while their panel has an open conversation. If delivery fails, the context is on your clipboard. |
 | `[DOM] Apply styles` says "No style changes recorded" | Changes are cleared every time you pick a new element. Pick the element, edit in Styles, then run the command. |
 | "Inspector connection lost — waiting for page reload…" shows a few seconds after every load | A known false alarm: the page only sends one ready signal, so the 5-second heartbeat always times out. Picking still works. |
+| A change doesn't show up after reinstalling | The editor is still running the old build: the sidebar footer shows the old version, or none (builds before 0.7.5). Fully quit and restart the editor; reloading the window isn't enough. |
 | MCP server says the port is used by another program | Something else listens on 3100. Set `domInspector.mcp.port`; the MCP configs it writes follow. |
 | Hot reload doesn't update the page | The proxy tunnels the dev server's HMR WebSocket, so saving a file should update the page. If it doesn't: check that your installed extension build includes WebSocket support (rebuild and reinstall), and look for `[vite] failed to connect to websocket` (or your bundler's equivalent) in **Developer: Open Webview Developer Tools**. A dev server configured with a fixed `server.hmr.host`/`clientPort` connects there directly instead of through the proxy. |
 
