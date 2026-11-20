@@ -514,7 +514,12 @@ function findKeyWithPrefix(obj, prefix){ try{ var ks=Object.keys(obj); for(var i
 function fileBase(f){ if(!f) return null; var p=String(f).split('/'); return p[p.length-1].replace(/\.(vue|svelte|jsx|tsx|js|ts)$/,''); }
 
 // Stack frames from libraries/runtime are skipped when looking for the app's JSX call site.
-var LIB_URL_RE = /\/node_modules\/|\/\.vite\/deps\/|\/@vite\/|\/@react-refresh|\/@id\/|react-dom|jsx-dev-runtime|jsx-runtime|\/_next\/static\/chunks\/(?:framework|main|webpack|polyfills)/;
+// Library code, by URL: plain paths (/node_modules/, Vite's /.vite/deps/) and bundler chunks
+// that flatten them (Turbopack: node_modules__bun_….js, …_next_dist_compiled_react-dom_….js).
+var LIB_URL_RE = /node_modules[\/_]|[\/_.]next[\/_]dist[\/_]|\/\.vite\/deps\/|\/@vite\/|\/@react-refresh|\/@id\/|react-dom|jsx-dev-runtime|jsx-runtime|\/_next\/static\/chunks\/(?:framework|main|webpack|polyfills)/;
+// React's own frames, by function name. Every _debugStack starts inside jsxDEV/createElement,
+// whatever the bundle containing it is called, so the URL alone can't be trusted.
+var REACT_FRAME_FN_RE = /(?:^|\.)(?:jsxDEV|jsxs?|jsxWithValidation\w*|createElement|cloneElement|react_stack_bottom_frame|renderWithHooks\w*)$/;
 var FRAME_RE = /at (?:(.+?) \()?((?:https?|file):\/\/[^\s()]+?):(\d+):(\d+)\)?\s*$/;
 
 function userFrame(stackErr){
@@ -523,7 +528,7 @@ function userFrame(stackErr){
   var lines = st.split('\n');
   for (var i=0;i<lines.length;i++){
     var m = lines[i].match(FRAME_RE);
-    if (!m || LIB_URL_RE.test(m[2])) continue;
+    if (!m || LIB_URL_RE.test(m[2]) || REACT_FRAME_FN_RE.test(m[1] || '')) continue;
     return { fn: m[1] || '', url: m[2], line: +m[3], column: +m[4] };
   }
   return null;
@@ -586,7 +591,19 @@ function reactInfo(el){
     h = h.return;
   }
   path.reverse();
-  info.componentPath = path;
+  // Keep the components written in the app: those whose render function shows up as a JSX call
+  // site in app code somewhere up the tree. This drops framework internals (Next.js routers,
+  // error boundaries, providers…) and library components (an icon's own wrapper).
+  var app = {}; h = fiber; guard = 0;
+  while (h && guard++ < 1000){
+    var hh = h;
+    var cf = userFrame(safeGet(function(){ return hh._debugStack; }));
+    var fnName = cf && cf.fn ? cf.fn.split('.').pop() : '';
+    if (/^[A-Z]/.test(fnName)) app[fnName] = true;
+    h = h.return;
+  }
+  var appPath = path.filter(function(n){ return app[n]; });
+  info.componentPath = appPath.length ? appPath : path;
   info.componentName = ownerName || path[path.length-1] || null;
   return info.componentName ? info : null;
 }

@@ -15,6 +15,21 @@ function topLevelVar(name: string): unknown {
   return vm.runInNewContext(line.slice(`var ${name} = `.length).replace(/;\s*$/, ''));
 }
 
+/** Evaluate top-level declarations (single-line vars, or a function up to its closing brace) together. */
+function topLevel(names: string[], expose: string): Record<string, unknown> {
+  const parts = names.map((name) => {
+    const lines = body.split('\n');
+    const i = lines.findIndex((l) => l.startsWith(`var ${name} = `) || l.startsWith(`function ${name}(`));
+    if (i < 0) throw new Error(`${name} not found in inspector.js`);
+    if (lines[i].startsWith('var ') || lines[i].trimEnd().endsWith('}')) return lines[i];
+    const end = lines.findIndex((l, j) => j > i && l === '}');
+    return lines.slice(i, end + 1).join('\n');
+  });
+  const ctx: Record<string, unknown> = {};
+  vm.runInNewContext(parts.join('\n') + `; this.${expose} = ${expose};`, ctx);
+  return ctx;
+}
+
 describe('injected inspector script', () => {
   it('is syntactically valid JavaScript', () => {
     expect(body.length).toBeGreaterThan(1000);
@@ -52,6 +67,33 @@ describe('stack frame parsing (React owner stacks)', () => {
     for (const url of ['http://localhost:5173/src/App.jsx', 'http://127.0.0.1:4000/app/routes/index.tsx?t=1']) {
       expect(LIB_URL_RE.test(url)).toBe(false);
     }
+  });
+
+  it('recognises bundler chunks that flatten library paths (Turbopack, webpack)', () => {
+    for (const url of [
+      'http://localhost:3000/_next/static/chunks/node_modules__bun_0ml7d41gihxlr._.js',
+      'http://localhost:3000/_next/static/chunks/0xpt_next_dist_compiled_react-dom_cjs_react-dom-client_development_12t587qjk97ow.js',
+      'http://localhost:3000/_next/static/chunks/node_modules_next_dist_client_components_layout-router.js',
+    ]) expect(LIB_URL_RE.test(url), url).toBe(true);
+    for (const url of [
+      'http://localhost:3000/_next/static/chunks/frontend_074e72j4ifkzr._.js',
+      'http://localhost:3000/_next/static/chunks/app_page_tsx_abc._.js',
+    ]) expect(LIB_URL_RE.test(url), url).toBe(false);
+  });
+
+  it("skips React's own frames by name and finds the app's JSX call site (real Next.js 16 / Turbopack stack)", () => {
+    const { userFrame } = topLevel(['safeGet', 'LIB_URL_RE', 'REACT_FRAME_FN_RE', 'FRAME_RE', 'userFrame'], 'userFrame') as
+      { userFrame: (s: string) => { fn: string; url: string; line: number; column: number } | null };
+    const stack = [
+      'Error: react-stack-top-frame',
+      '    at exports.jsxDEV (http://localhost:3000/_next/static/chunks/node_modules__bun_0ml7d41gihxlr._.js:8163:33)',
+      '    at TopSwitch (http://localhost:3000/_next/static/chunks/frontend_074e72j4ifkzr._.js:825:288)',
+      '    at Object.react_stack_bottom_frame (http://localhost:3000/_next/static/chunks/0xpt_next_dist_compiled_react-dom_cjs_react-dom-client_development_12t587qjk97ow.js:15013:24)',
+    ].join('\n');
+    expect(userFrame(stack)).toEqual({ fn: 'TopSwitch', url: 'http://localhost:3000/_next/static/chunks/frontend_074e72j4ifkzr._.js', line: 825, column: 288 });
+    // Even if a chunk name gave nothing away, jsxDEV is never the call site.
+    expect(userFrame('Error\n    at exports.jsxDEV (http://h/chunk_a.js:1:1)\n    at Card (http://h/chunk_b.js:2:2)')?.fn).toBe('Card');
+    expect(userFrame('Error\n    at jsxDEV (http://h/a.js:1:1)\n    at Object.react_stack_bottom_frame (http://h/b.js:1:1)')).toBeNull();
   });
 
   it('builds attribute selectors with minimal, valid escaping', () => {
