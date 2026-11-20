@@ -58,18 +58,35 @@ function notifyClients(): void {
   for (const l of [...clientListeners]) { try { l(ids); } catch { /* ignore */ } }
 }
 
+/**
+ * CORS for pages that reach the channel from their own origin (attached in
+ * Cursor's browser rather than served through the proxy). Access is still
+ * gated by the per-session token; these headers only let the browser make
+ * the request.
+ */
+const CORS_HEADERS: http.OutgoingHttpHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "content-type",
+  "access-control-allow-private-network": "true",
+  "access-control-max-age": "600",
+};
+
 /** Handle /__dom-inspector__/* requests. Returns true when handled. */
 export function handleChannelRequest(req: http.IncomingMessage, res: http.ServerResponse): boolean {
   if (!req.url || !req.url.startsWith(CHANNEL_PREFIX)) return false;
+  if (req.method === "OPTIONS") {   // CORS / private-network preflight
+    res.writeHead(204, CORS_HEADERS); res.end(); return true;
+  }
   const url = new URL(req.url, "http://127.0.0.1");
   const route = url.pathname.slice(CHANNEL_PREFIX.length);
   const clientId = (url.searchParams.get("c") || "").slice(0, 64);
   if (url.searchParams.get("t") !== sessionToken || !/^[\w-]+$/.test(clientId)) {
-    res.writeHead(403); res.end(); return true;
+    res.writeHead(403, CORS_HEADERS); res.end(); return true;
   }
 
   if (route === "events" && req.method === "GET") {
-    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
+    res.writeHead(200, { ...CORS_HEADERS, "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
     res.write("retry: 1000\n\n");
     sseClients.get(clientId)?.end();
     sseClients.set(clientId, res);
@@ -88,21 +105,21 @@ export function handleChannelRequest(req: http.IncomingMessage, res: http.Server
     let size = 0;
     req.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > MAX_MESSAGE_BYTES) { res.writeHead(413); res.end(); req.destroy(); return; }
+      if (size > MAX_MESSAGE_BYTES) { res.writeHead(413, CORS_HEADERS); res.end(); req.destroy(); return; }
       chunks.push(c);
     });
     req.on("end", () => {
       if (res.writableEnded) return;
       let msg: { type?: unknown } | null = null;
       try { msg = JSON.parse(Buffer.concat(chunks).toString("utf-8")); } catch { /* invalid */ }
-      if (!msg || typeof msg.type !== "string") { res.writeHead(400); res.end(); return; }
-      res.writeHead(204); res.end();
+      if (!msg || typeof msg.type !== "string") { res.writeHead(400, CORS_HEADERS); res.end(); return; }
+      res.writeHead(204, CORS_HEADERS); res.end();
       for (const l of [...messageListeners]) { try { l(msg as { type: string }, clientId); } catch { /* ignore */ } }
     });
     return true;
   }
 
-  res.writeHead(404); res.end();
+  res.writeHead(404, CORS_HEADERS); res.end();
   return true;
 }
 

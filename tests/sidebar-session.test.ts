@@ -27,7 +27,7 @@ describe('sidebar session persistence', () => {
     const first = fakeView();
     resolve(provider, first);
 
-    provider.updateUrlHistory(['http://localhost:5173']);
+    provider.setAttachAvailable(true);
     provider.log('opening http://localhost:5173');
     provider.setBrowserOpen(true);
     provider.updateFullTree({ tag: 'html', id: null, classNames: [], childCount: 0, selectorPath: 'html', children: [] });
@@ -43,22 +43,19 @@ describe('sidebar session persistence', () => {
     second.send({ type: 'sidebar_ready' });
 
     expect(second.posted.map((m) => m.type)).toEqual([
-      'debug_log', 'url_history', 'update_full_tree', 'update_element', 'browser_state', 'inspect_state',
+      'attach_available', 'update_full_tree', 'update_element', 'browser_state', 'inspect_state',
     ]);
     expect((second.posted.find((m) => m.type === 'update_element')!.data as { tag: string }).tag).toBe('h1');
     expect(second.posted.find((m) => m.type === 'inspect_state')!.active).toBe(true);
   });
 
-  it('keeps only the most recent console lines', () => {
-    const provider = new InspectorSidebarProvider({ onRequestChildren() {} });
-    resolve(provider, fakeView());
-    for (let i = 0; i < 350; i++) provider.log(`line ${i}`);
-    const again = fakeView();
-    resolve(provider, again);
-    again.send({ type: 'sidebar_ready' });
-    const lines = again.posted.filter((m) => m.type === 'debug_log').map((m) => m.message);
-    expect(lines).toHaveLength(300);
-    expect(lines[0]).toBe('line 50');
-    expect(lines[299]).toBe('line 349');
+  it('sends log lines to the logger, not to the webview', () => {
+    const lines: string[] = [];
+    const provider = new InspectorSidebarProvider({ onRequestChildren() {} }, 'v1', (l) => lines.push(l));
+    const view = fakeView();
+    resolve(provider, view);
+    provider.log('bridge connected');
+    expect(lines).toEqual(['bridge connected']);
+    expect(view.posted).toEqual([]);
   });
 });

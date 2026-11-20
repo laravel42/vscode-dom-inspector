@@ -162,6 +162,7 @@ export type BridgeMessage =
   | { type: 'set_style'; selector: string; property: string; value: string }
   | { type: 'toggle_style'; selector: string; property: string; enabled: boolean }
   | { type: 'ai_targets'; primary: string }          // label of the current AI target, for the context menu
+  | { type: 'detach' }                                 // remove the inspector from the page entirely
   // Inspector Script → Extension Host
   | { type: 'element_hovered'; data: HoverData }
   | { type: 'element_picked'; data: ElementData }

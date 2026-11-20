@@ -14,36 +14,40 @@ export interface SidebarCallbacks {
   onStopInspect?(): void;
   /** A node was clicked in the Elements tree. */
   onSelectNode?(selector: string): void;
+  /** "Inspect the page open in Cursor's browser" was clicked. */
+  onAttachBrowserTab?(): void;
+  /** "Detach from current page" was clicked. */
+  onDetach?(): void;
 }
 
 /**
- * The DevTools-style sidebar webview: URL omnibox, and Elements, Styles,
- * Computed and Console tabs. Its document, styles and script are
- * src/webview/sidebar.{html,css,js}.
+ * The DevTools-style sidebar webview: Elements, Styles and Computed tabs, a
+ * start screen and a bottom bar. Its document, styles and script are
+ * src/webview/sidebar.{html,css,js}. Diagnostic logging goes to the logger
+ * passed in (the "DOM Inspector" Output channel), not to the webview.
  */
 export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "domInspector.inspectorSidebar";
 
   private view: vscode.WebviewView | undefined;
   private readonly callbacks: SidebarCallbacks;
-  private readonly readyCallbacks: Array<() => void> = [];
   /** Shown at the bottom of the sidebar, e.g. "v0.7.4" or "v0.7.4 (dev)". */
   private readonly versionLabel: string;
+  private readonly logger: (line: string) => void;
   /**
-   * The latest message of each state-carrying type, and recent Console lines.
-   * If VS Code re-creates the view (e.g. after it was closed), the new webview
-   * says "sidebar_ready" and gets these replayed, so the session survives.
+   * The latest message of each state-carrying type. If VS Code re-creates the
+   * view (e.g. after it was closed), the new webview says "sidebar_ready" and
+   * gets these replayed, so the session survives.
    */
   private readonly latestState = new Map<string, SidebarMessage>();
-  private readonly logLines: SidebarMessage[] = [];
   private static readonly REPLAYED_TYPES = [
-    "url_history", "update_dom_tree", "update_full_tree", "update_element", "browser_state", "inspect_state",
+    "attach_available", "update_dom_tree", "update_full_tree", "update_element", "browser_state", "inspect_state",
   ];
-  private static readonly MAX_REPLAYED_LOG_LINES = 300;
 
-  constructor(callbacks: SidebarCallbacks, versionLabel = "") {
+  constructor(callbacks: SidebarCallbacks, versionLabel = "", logger: (line: string) => void = () => {}) {
     this.callbacks = callbacks;
     this.versionLabel = versionLabel;
+    this.logger = logger;
   }
 
   /* ------------------------------------------------------------------ */
@@ -63,6 +67,12 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage((msg: { type: string; selector?: string; url?: string; [k: string]: unknown }) => {
       if (msg.type === "sidebar_ready") {
         this.replayState();
+      } else if (msg.type === "detach") {
+        this.callbacks.onDetach?.();
+      } else if (msg.type === "open_url_command") {
+        vscode.commands.executeCommand("domInspector.openUrl");
+      } else if (msg.type === "attach_browser_tab") {
+        this.callbacks.onAttachBrowserTab?.();
       } else if (msg.type === "select_node" && msg.selector) {
         this.callbacks.onSelectNode?.(msg.selector);
       } else if (msg.type === "request_children" && msg.selector) {
@@ -90,8 +100,6 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
       this.view = undefined;
     });
 
-    // Fire ready callbacks
-    for (const cb of this.readyCallbacks) cb();
   }
 
   /* ------------------------------------------------------------------ */
@@ -128,9 +136,9 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: "update_hover_preview", data });
   }
 
-  /** Send a debug log message to the sidebar panel. */
+  /** Diagnostic log line (bridge messages, source lookups, MCP posts…), to the logger. */
   log(message: string): void {
-    this.postMessage({ type: "debug_log", message });
+    this.logger(message);
   }
 
   /** Reflect picking mode on the inspect button (the extension is the source of truth). */
@@ -138,19 +146,14 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: "inspect_state", active });
   }
 
+  /** Show the "inspect the page open in Cursor's browser" button (Cursor only). */
+  setAttachAvailable(available: boolean): void {
+    this.postMessage({ type: "attach_available", available });
+  }
+
   /** Show or hide the empty state based on browser panel status. */
-  setBrowserOpen(open: boolean): void {
-    this.postMessage({ type: "browser_state", open });
-  }
-
-  /** Update the URL history in the sidebar autocomplete. */
-  updateUrlHistory(history: string[]): void {
-    this.postMessage({ type: "url_history", history });
-  }
-
-  /** Register a callback for when the sidebar webview is ready. */
-  onReady(callback: () => void): void {
-    this.readyCallbacks.push(callback);
+  setBrowserOpen(open: boolean, url = ""): void {
+    this.postMessage({ type: "browser_state", open, url });
   }
 
   /* ------------------------------------------------------------------ */
@@ -160,9 +163,6 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
   private postMessage(msg: SidebarMessage): void {
     if (InspectorSidebarProvider.REPLAYED_TYPES.includes(msg.type)) {
       this.latestState.set(msg.type, msg);
-    } else if (msg.type === "debug_log") {
-      this.logLines.push(msg);
-      if (this.logLines.length > InspectorSidebarProvider.MAX_REPLAYED_LOG_LINES) this.logLines.shift();
     }
     this.view?.webview.postMessage(msg);
   }
@@ -171,7 +171,6 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
   private replayState(): void {
     const webview = this.view?.webview;
     if (!webview) return;
-    for (const line of this.logLines) webview.postMessage(line);
     for (const type of InspectorSidebarProvider.REPLAYED_TYPES) {
       const msg = this.latestState.get(type);
       if (msg) webview.postMessage(msg);

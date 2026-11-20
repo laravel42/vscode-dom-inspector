@@ -126,3 +126,27 @@ describe('resolveBrowser', () => {
     expect(resolveBrowser('bogus', has())).toBe('panel');
   });
 });
+
+describe('cross-origin access (pages attached in Cursor\'s browser)', () => {
+  it('answers CORS / private-network preflights without the token', async () => {
+    const res = await fetch(`http://127.0.0.1:${proxyPort}${CHANNEL_PREFIX}message?t=whatever&c=x`, {
+      method: 'OPTIONS',
+      headers: { origin: 'http://localhost:5173', 'access-control-request-method': 'POST', 'access-control-request-private-network': 'true' },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('access-control-allow-private-network')).toBe('true');
+    expect(res.headers.get('access-control-allow-headers')).toContain('content-type');
+  });
+
+  it('still requires the token, and labels every response for CORS', async () => {
+    const denied = await fetch(`http://127.0.0.1:${proxyPort}${CHANNEL_PREFIX}message?t=wrong&c=x`, { method: 'POST', body: '{"type":"x"}' });
+    expect(denied.status).toBe(403);
+    expect(denied.headers.get('access-control-allow-origin')).toBe('*');
+    const ok = await fetch(`http://127.0.0.1:${proxyPort}${CHANNEL_PREFIX}message?t=${token}&c=cors`, {
+      method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' }, body: '{"type":"ping"}',
+    });
+    expect(ok.status).toBe(204);
+    expect(ok.headers.get('access-control-allow-origin')).toBe('*');
+  });
+});

@@ -175,7 +175,7 @@ export function panelHtml(proxyUrl: string, originalUrl: string): string {
       const TO_PAGE_TYPES = [
         'start_inspector', 'stop_inspector',
         'get_children', 'get_full_tree', 'inspect_node',
-        'set_style', 'toggle_style', 'ai_targets'
+        'set_style', 'toggle_style', 'ai_targets', 'detach'
       ];
       // All BridgeMessage types that flow Inspector Script (page) → Extension Host
       const TO_HOST_TYPES = [

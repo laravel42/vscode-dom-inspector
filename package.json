@@ -27,6 +27,14 @@
         "title": "DOM Inspector: Inspect Element"
       },
       {
+        "command": "domInspector.inspectBrowserTab",
+        "title": "DOM Inspector: Inspect Cursor Browser Tab"
+      },
+      {
+        "command": "domInspector.detach",
+        "title": "DOM Inspector: Detach from Current Page"
+      },
+      {
         "command": "domInspector.chooseBrowser",
         "title": "DOM Inspector: Choose Browser…"
       },

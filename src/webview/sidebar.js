@@ -6,118 +6,6 @@
   const emptyEl = $("empty");
   const contentEl = $("content");
 
-  /* ---- URL omnibox with autocomplete ---- */
-  const HISTORY_ICON = '<svg viewBox="0 0 16 16"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 12.5A5.5 5.5 0 1 1 8 2.5a5.5 5.5 0 0 1 0 11zM8.5 4H7v4.5l3.15 1.89.5-.84L8.5 8V4z"/></svg>';
-  let urlHistory = [];
-  let dropdownIdx = -1;
-  const urlField = $("url-field");
-  const urlDropdown = $("url-dropdown");
-
-  function submitUrl() {
-    const url = urlField.value.trim();
-    if (!url) return;
-    urlDropdown.classList.remove("visible");
-    dropdownIdx = -1;
-    vscode.postMessage({ type: "open_url_direct", url: url });
-  }
-
-  urlField.addEventListener("keydown", (e) => {
-    const items = urlDropdown.querySelectorAll(".url-dropdown-item");
-    if (e.key === "Enter") {
-      e.preventDefault();
-      if (dropdownIdx >= 0 && items[dropdownIdx]) {
-        urlField.value = items[dropdownIdx].dataset.url;
-      }
-      urlDropdown.classList.remove("visible");
-      dropdownIdx = -1;
-      submitUrl();
-    } else if (e.key === "ArrowDown") {
-      e.preventDefault();
-      if (items.length) {
-        dropdownIdx = Math.min(dropdownIdx + 1, items.length - 1);
-        updateActive(items);
-      }
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      if (dropdownIdx > 0) {
-        dropdownIdx--;
-        updateActive(items);
-      }
-    } else if (e.key === "Escape") {
-      urlDropdown.classList.remove("visible");
-      dropdownIdx = -1;
-    }
-  });
-
-  urlField.addEventListener("input", () => {
-    filterDropdown(urlField.value.trim().toLowerCase());
-  });
-
-  urlField.addEventListener("focus", () => {
-    // Show last 10 on focus, like Chrome
-    showRecent();
-  });
-
-  urlField.addEventListener("click", () => {
-    if (!urlDropdown.classList.contains("visible")) showRecent();
-  });
-
-  document.addEventListener("click", (e) => {
-    if (!e.target.closest(".url-bar")) {
-      urlDropdown.classList.remove("visible");
-      dropdownIdx = -1;
-    }
-  });
-
-  function showRecent() {
-    const val = urlField.value.trim().toLowerCase();
-    if (val) { filterDropdown(val); return; }
-    if (!urlHistory.length) { urlDropdown.classList.remove("visible"); return; }
-    dropdownIdx = -1;
-    const recent = urlHistory.slice(0, 10);
-    renderDropdown(recent, "");
-  }
-
-  function filterDropdown(query) {
-    if (!query) { showRecent(); return; }
-    const filtered = urlHistory.filter(u => u.toLowerCase().includes(query)).slice(0, 10);
-    if (!filtered.length) { urlDropdown.classList.remove("visible"); return; }
-    dropdownIdx = -1;
-    renderDropdown(filtered, query);
-  }
-
-  function renderDropdown(items, query) {
-    urlDropdown.innerHTML = items.map(u => {
-      let display = esc(u);
-      if (query) {
-        const idx = u.toLowerCase().indexOf(query);
-        if (idx >= 0) {
-          display = esc(u.slice(0, idx)) + '<span class="match">' + esc(u.slice(idx, idx + query.length)) + '</span>' + esc(u.slice(idx + query.length));
-        }
-      }
-      return '<div class="url-dropdown-item" data-url="' + esc(u) + '">' +
-        '<span class="url-item-icon">' + HISTORY_ICON + '</span>' +
-        '<span>' + display + '</span></div>';
-    }).join("");
-    urlDropdown.classList.add("visible");
-
-    urlDropdown.querySelectorAll(".url-dropdown-item").forEach(item => {
-      item.addEventListener("click", () => {
-        urlField.value = item.dataset.url;
-        urlDropdown.classList.remove("visible");
-        dropdownIdx = -1;
-        submitUrl();
-      });
-    });
-  }
-
-  function updateActive(items) {
-    items.forEach((it, i) => it.classList.toggle("active", i === dropdownIdx));
-    if (items[dropdownIdx]) {
-      items[dropdownIdx].scrollIntoView({ block: "nearest" });
-    }
-  }
-
   /* ---- DevTools tab switching (the chosen tab survives the view being re-created) ---- */
   function activateTab(panelId) {
     const tab = document.querySelector('.dt-tab[data-tab="' + panelId + '"]');
@@ -551,19 +439,6 @@
     }
   }
 
-  function appendDebugLog(message) {
-    const logEl = $("debug-log");
-    if (logEl) {
-      const line = document.createElement("div");
-      line.style.borderBottom = "1px solid var(--border)";
-      line.style.padding = "2px 0";
-      const ts = new Date().toLocaleTimeString("en", {hour12:false,hour:"2-digit",minute:"2-digit",second:"2-digit"});
-      line.textContent = ts + " " + (message || "");
-      logEl.appendChild(line);
-      logEl.scrollTop = logEl.scrollHeight;
-    }
-  }
-
   /* ---- Full tree rendering ---- */
   function renderFullTree(tree) {
     if (!tree) return;
@@ -868,11 +743,6 @@
         break;
       }
 
-      case "debug_log": {
-        appendDebugLog(msg.message);
-        break;
-      }
-
       case "browser_state": {
         if (msg.open) {
           emptyEl.style.display = "none";
@@ -880,19 +750,35 @@
           emptyEl.style.display = "";
           contentEl.style.display = "none";
         }
-        break;
-      }
-
-      case "url_history": {
-        urlHistory = msg.history || [];
+        detachBtn.hidden = !msg.open;
+        pageStatus.hidden = !msg.open;
+        pageStatus.textContent = msg.open ? (msg.url ? "Attached to " + shortUrl(msg.url) : "Attached") : "";
+        pageStatus.title = msg.url || "";
         break;
       }
 
       case "inspect_state":
         setInspectActive(msg.active);
         break;
+
+      case "attach_available":
+        attachBtn.hidden = !msg.available;
+        break;
     }
   });
+
+  /* ---- Start screen: inspect the page open in Cursor's browser, or open a URL ---- */
+  const attachBtn = $("attach-tab");
+  attachBtn.addEventListener("click", () => vscode.postMessage({ type: "attach_browser_tab" }));
+  $("open-url").addEventListener("click", () => vscode.postMessage({ type: "open_url_command" }));
+
+  /* ---- Bottom bar: detach from the current page ---- */
+  const detachBtn = $("detach");
+  detachBtn.addEventListener("click", () => vscode.postMessage({ type: "detach" }));
+  const pageStatus = $("page-status");
+  function shortUrl(u) {
+    try { const x = new URL(u); return x.host + (x.pathname === "/" ? "" : x.pathname); } catch (e) { return u; }
+  }
 
   // Ask the extension to replay the session (tree, selection, console…) into this view.
   vscode.postMessage({ type: "sidebar_ready" });

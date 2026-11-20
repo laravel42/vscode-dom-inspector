@@ -16,9 +16,23 @@ let server: http.Server | undefined;
 let currentTarget: string = "";
 let proxyPort = 0;
 
-/** The `<script>` tag injected into pages: inspector.js with this session's token. */
+/**
+ * inspector.js with this session's token. `channelBase` is where the page
+ * reaches the page channel: "" (same origin) for proxied pages, or
+ * proxyOrigin() for pages attached directly, e.g. in Cursor's browser.
+ */
+export function inspectorScript(channelBase = ""): string {
+  return webviewAsset("inspector.js").split("__DI_TOKEN__").join(channelToken()).split("__DI_BASE__").join(channelBase);
+}
+
+/** The `<script>` tag injected into proxied pages. */
 export function inspectorScriptTag(): string {
-  return "\n<script data-dom-inspector>\n" + webviewAsset("inspector.js").replace("__DI_TOKEN__", channelToken()) + "</script>";
+  return "\n<script data-dom-inspector>\n" + inspectorScript() + "</script>";
+}
+
+/** The proxy's origin (it also hosts the page channel); "" when it isn't running. */
+export function proxyOrigin(): string {
+  return server && proxyPort ? `http://127.0.0.1:${proxyPort}` : "";
 }
 
 export function startProxy(targetUrl: string): Promise<number> {

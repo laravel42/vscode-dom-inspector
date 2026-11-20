@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { startProxy, stopProxy } from "./browser/proxy";
+import { inspectorScript, proxyOrigin, startProxy, stopProxy } from "./browser/proxy";
+import { channelToken } from "./browser/page-channel";
+import { Injection, currentCursorTab, cursorBrowserAvailable, detachFromCursorTab, injectIntoCursorTab, isInspectableUrl } from "./browser/cursor-browser";
 import { BridgeChannel, panelHtml } from "./browser/panel";
 import { BROWSER_LABELS, BrowserKind, HttpPageChannel, PageChannel, openInBrowser, resolveBrowser } from "./browser/browsers";
 import { SourceMapper } from "./source/source-mapper";
@@ -34,6 +36,8 @@ const sourceMapper = new SourceMapper();
 const breadcrumb = new ComponentBreadcrumb();
 
 let connectionLostMsg: vscode.Disposable | undefined;
+/** Where the inspector is injected when attached to a page in Cursor's browser. */
+let cursorInjection: Injection | undefined;
 /** The next element_picked answers a click in the sidebar's Elements tree. */
 let treeSelectPending = false;
 
@@ -124,13 +128,22 @@ export function activate(context: vscode.ExtensionContext) {
     onStopInspect() {
       stopInspection(sidebarProvider);
     },
+    onAttachBrowserTab() {
+      inspectBrowserTab(sidebarProvider);
+    },
+    onDetach() {
+      detachFromPage(sidebarProvider);
+    },
     onSelectNode(selector: string) {
       // Inspect the clicked node in the page; it answers with element_picked.
       if (!bridge) return;
       treeSelectPending = true;
       bridge.sendToPage({ type: "inspect_node", selector });
     },
-  }, versionLabel(context));
+  }, versionLabel(context), (line) => {
+    // Diagnostic log (was the sidebar's Console tab): Output → DOM Inspector.
+    output.appendLine(`[${new Date().toLocaleTimeString("en", { hour12: false })}] ${line}`);
+  });
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -143,9 +156,9 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // Send initial URL history to sidebar when it becomes visible
-  sidebarProvider.onReady(() => {
-    sidebarProvider.updateUrlHistory(urlHistory);
-  });
+
+  // Offer "inspect the page open in Cursor's browser" where that browser exists.
+  cursorBrowserAvailable().then((available) => sidebarProvider.setAttachAvailable(available), () => {});
 
   // --- Breadcrumb segment click handler ---
   breadcrumb.onSegmentClicked((component: ComponentPathEntry) => {
@@ -165,6 +178,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("domInspector.chooseAiTarget", () => chooseAiTarget()),
     vscode.commands.registerCommand("domInspector.setupMcp", () => setupMcpForAiTools(mcpHost())),
     vscode.commands.registerCommand("domInspector.chooseBrowser", () => chooseBrowser(sidebarProvider)),
+    vscode.commands.registerCommand("domInspector.inspectBrowserTab", () => inspectBrowserTab(sidebarProvider)),
+    vscode.commands.registerCommand("domInspector.detach", () => detachFromPage(sidebarProvider)),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("domInspector.ai")) pushAiTargetToPage();
       if (e.affectsConfiguration("domInspector.mcp")) autoConfigureMcp(mcpHost());
@@ -179,15 +194,33 @@ export function activate(context: vscode.ExtensionContext) {
 // Open URL — create browser panel with proxy
 // ---------------------------------------------------------------------------
 
-async function openUrl(sidebarProvider: InspectorSidebarProvider, directUrl?: string, forceKind?: BrowserKind) {
-  let url = directUrl;
-  if (!url) {
-    url = await vscode.window.showInputBox({
-      prompt: "Enter URL to open",
-      placeHolder: "http://localhost:5173",
-      value: currentPageUrl || "http://localhost:5173",
+/** Ask for a URL: type one, or pick from the recent ones (most recent first). */
+function promptForUrl(): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const qp = vscode.window.createQuickPick();
+    qp.title = "DOM Inspector: Open URL";
+    qp.placeholder = "Type a URL (e.g. http://localhost:5173) or pick a recent one";
+    qp.value = currentPageUrl || (urlHistory.length ? "" : "http://localhost:5173");
+    const items = () => {
+      const typed = qp.value.trim();
+      const recent = urlHistory.map((u) => ({ label: u, description: u === currentPageUrl ? "current" : "recent" }));
+      return typed && !urlHistory.includes(typed) ? [{ label: typed, description: "open" }, ...recent] : recent;
+    };
+    qp.items = items();
+    qp.onDidChangeValue(() => { qp.items = items(); });
+    let done = false;
+    qp.onDidAccept(() => {
+      done = true;
+      resolve(qp.selectedItems[0]?.label ?? (qp.value.trim() || undefined));
+      qp.hide();
     });
-  }
+    qp.onDidHide(() => { if (!done) resolve(undefined); qp.dispose(); });
+    qp.show();
+  });
+}
+
+async function openUrl(sidebarProvider: InspectorSidebarProvider, directUrl?: string, forceKind?: BrowserKind) {
+  const url = directUrl ?? await promptForUrl();
   if (!url) return;
   let target: URL;
   try {
@@ -197,12 +230,7 @@ async function openUrl(sidebarProvider: InspectorSidebarProvider, directUrl?: st
     return;
   }
 
-  // Save to history
-  urlHistory = urlHistory.filter(u => u !== url);
-  urlHistory.unshift(url!);
-  if (urlHistory.length > MAX_URL_HISTORY) urlHistory.length = MAX_URL_HISTORY;
-  extensionContext.globalState.update("domInspector.urlHistory", urlHistory);
-  sidebarProvider.updateUrlHistory(urlHistory);
+  rememberUrl(url);
 
   sidebarProvider.log(`opening ${url}`);
   currentPageUrl = url;
@@ -221,7 +249,7 @@ async function openUrl(sidebarProvider: InspectorSidebarProvider, directUrl?: st
     try {
       useHttpChannel(sidebarProvider, kind);
       await openInBrowser(kind, proxyUrl);
-      sidebarProvider.setBrowserOpen(true);
+      sidebarProvider.setBrowserOpen(true, currentPageUrl);
       if (kind === "external") {
         vscode.window.showInformationMessage(`Opened ${url} in your browser through DOM Inspector. Right-click elements there to inspect or send them to AI.`);
       }
@@ -232,6 +260,87 @@ async function openUrl(sidebarProvider: InspectorSidebarProvider, directUrl?: st
     }
   }
   openPanel(sidebarProvider, proxyUrl, url);
+}
+
+function rememberUrl(url: string): void {
+  urlHistory = urlHistory.filter(u => u !== url);
+  urlHistory.unshift(url);
+  if (urlHistory.length > MAX_URL_HISTORY) urlHistory.length = MAX_URL_HISTORY;
+  extensionContext.globalState.update("domInspector.urlHistory", urlHistory);
+}
+
+// ---------------------------------------------------------------------------
+// Attach to the page open in Cursor's browser (no URL, no proxy in front)
+// ---------------------------------------------------------------------------
+
+type AttachResult = "attached" | "unavailable" | "no-tab" | "failed";
+
+/**
+ * Inject the inspector into the page currently open in Cursor's browser tab.
+ * The page is not proxied: the proxy only hosts the page channel, which the
+ * page reaches cross-origin (CORS, token-protected).
+ */
+async function attachToCursorBrowser(sidebarProvider: InspectorSidebarProvider, quietIfNoTab = false): Promise<AttachResult> {
+  if (!(await cursorBrowserAvailable())) {
+    if (!quietIfNoTab) vscode.window.showWarningMessage("Inspecting the open browser tab needs Cursor's built-in browser. Use DOM Inspector: Open URL instead.");
+    return "unavailable";
+  }
+  let tab;
+  try {
+    tab = await currentCursorTab();
+  } catch (err) {
+    sidebarProvider.log(`cursor browser: listing tabs failed — ${err}`);
+    if (!quietIfNoTab) vscode.window.showWarningMessage(`Couldn't read Cursor's browser tabs (${err instanceof Error ? err.message : err}).`);
+    return "failed";
+  }
+  if (!tab) {
+    if (!quietIfNoTab) vscode.window.showWarningMessage("No page is open in Cursor's browser. Open your app there first, or use DOM Inspector: Open URL.");
+    return "no-tab";
+  }
+  if (!isInspectableUrl(tab.url)) {
+    vscode.window.showWarningMessage(`Can't inspect ${tab.url}: only http(s) pages can be inspected.`);
+    return "failed";
+  }
+
+  sidebarProvider.log(`attaching to the Cursor browser tab: ${tab.url}`);
+  useHttpChannel(sidebarProvider, "cursor");
+  await startProxy(tab.url);   // hosts the page channel
+  if (cursorInjection) await detachFromCursorTab(cursorInjection);
+  try {
+    cursorInjection = await injectIntoCursorTab(tab.viewId, inspectorScript(proxyOrigin()), channelToken());
+  } catch (err) {
+    cursorInjection = undefined;
+    sidebarProvider.log(`cursor browser: injection failed — ${err}`);
+    vscode.window.showWarningMessage(`Couldn't attach to the page in Cursor's browser (${err instanceof Error ? err.message : err}).`);
+    return "failed";
+  }
+  currentPageUrl = tab.url;
+  rememberUrl(tab.url);
+  sidebarProvider.setBrowserOpen(true, currentPageUrl);
+  return "attached";
+}
+
+/** Resolve once the page channel has a connected page (or after `ms`). */
+function waitForPageConnection(ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const tick = () => {
+      if (bridge?.isConnected) return resolve(true);
+      if (Date.now() - start >= ms) return resolve(false);
+      setTimeout(tick, 100);
+    };
+    tick();
+  });
+}
+
+/** Command: attach to the Cursor browser tab and say so. */
+async function inspectBrowserTab(sidebarProvider: InspectorSidebarProvider): Promise<void> {
+  if (await attachToCursorBrowser(sidebarProvider) !== "attached") return;
+  const connected = await waitForPageConnection(4000);
+  vscode.window.setStatusBarMessage(
+    connected ? `$(check) DOM Inspector attached to ${currentPageUrl}` : `$(warning) DOM Inspector injected, waiting for the page to connect…`,
+    4000,
+  );
 }
 
 /** Switch to the HTTP page channel (used by every browser except our own panel). */
@@ -265,7 +374,7 @@ function openPanel(sidebarProvider: InspectorSidebarProvider, proxyUrl: string, 
   );
   browserPanel = panel;
   panel.webview.html = panelHtml(proxyUrl, url);
-  sidebarProvider.setBrowserOpen(true);
+  sidebarProvider.setBrowserOpen(true, currentPageUrl);
 
   const panelBridge = new BridgeChannel(panel);
   bridge = panelBridge;
@@ -306,11 +415,21 @@ async function chooseBrowser(sidebarProvider: InspectorSidebarProvider): Promise
 // Activate inspection mode
 // ---------------------------------------------------------------------------
 
-function activateInspection(sidebarProvider: InspectorSidebarProvider) {
+async function activateInspection(sidebarProvider: InspectorSidebarProvider) {
+  // No page connected yet: inspect the page open in Cursor's browser, if any.
+  if (!bridge || (browserKind !== "panel" && !bridge.isConnected)) {
+    const attached = await attachToCursorBrowser(sidebarProvider, true);
+    if (attached === "attached" && !(await waitForPageConnection(4000))) {
+      sidebarProvider.setInspecting(false);
+      vscode.window.showWarningMessage("The page in Cursor's browser didn't connect to DOM Inspector. Reload it and try again; see Output → DOM Inspector for details.");
+      return;
+    }
+    if (attached === "failed") { sidebarProvider.setInspecting(false); return; }
+  }
   if (!bridge) {
     sidebarProvider.setInspecting(false);
     vscode.window.showWarningMessage(
-      "Open a URL first (⌘⇧U), then pick an element.",
+      "Open your app in Cursor's browser, or use DOM Inspector: Open URL (⌘⇧U), then pick an element.",
     );
     return;
   }
@@ -326,6 +445,35 @@ function activateInspection(sidebarProvider: InspectorSidebarProvider) {
   bridge.sendToPage({ type: "start_inspector" });
   sidebarProvider.setInspecting(true);
   sidebarProvider.log("sent start_inspector to page");
+}
+
+/**
+ * "Detach from current page": remove the inspector from the page (listeners,
+ * overlays, connection), stop re-injecting it into a Cursor browser tab, and
+ * release the browser: the panel closes, the proxy stops. The sidebar returns
+ * to its start screen.
+ */
+async function detachFromPage(sidebarProvider: InspectorSidebarProvider): Promise<void> {
+  const url = currentPageUrl;
+  bridge?.sendToPage({ type: "detach" });
+  if (cursorInjection) {
+    await detachFromCursorTab(cursorInjection);
+    cursorInjection = undefined;
+  }
+  const panel = browserPanel;
+  browserKind = undefined;              // so the panel's dispose handler doesn't run its own teardown
+  bridge?.dispose();
+  bridge = undefined;
+  if (panel) panel.dispose();
+  // Give the page a moment to receive "detach" over the channel before it closes.
+  setTimeout(() => stopProxy(), 300);
+  lastPick = null;
+  styleChanges = [];
+  breadcrumb.clear();
+  sidebarProvider.setInspecting(false);
+  sidebarProvider.setBrowserOpen(false);
+  sidebarProvider.log(`detached from ${url || "the page"}`);
+  vscode.window.setStatusBarMessage(`$(debug-disconnect) DOM Inspector detached${url ? ` from ${url}` : ""}`, 3000);
 }
 
 /** Stop picking (the sidebar's inspect button, clicked while active). */
@@ -371,7 +519,7 @@ function wireUpBridge(
           // node has no source (structural nodes like <body> usually don't), and
           // picking mode, if active, carries on.
           treeSelectPending = false;
-          handleElementPicked(msg.data, sidebarProvider, { quietWhenNoSource: true });
+          handleElementPicked(msg.data, sidebarProvider);
         } else {
           // A pick (click, Enter, or right-click → Inspect element) ends inspection.
           sidebarProvider.setInspecting(false);
@@ -456,27 +604,10 @@ function wireUpBridge(
 async function handleElementPicked(
   element: ElementData,
   sidebarProvider: InspectorSidebarProvider,
-  options: { quietWhenNoSource?: boolean } = {},
 ) {
-  const cwd = workspaceRoot();
-
-  // 1. Run SourceMapper
-  const source = await sourceMapper.resolve(element, cwd);
-  sidebarProvider.log(`source: ${source ? source.strategy + " → " + source.filePath + ":" + source.line : "not found"}`);
-  sidebarProvider.log(`componentInfo: ${element.componentInfo ? element.componentInfo.componentName + " (framework: " + element.componentInfo.framework + ", sourceFile: " + element.componentInfo.sourceFile + ")" : "null"}`);
-
-  // 2. Open file side by side and highlight line
-  if (source) {
-    const fullPath = path.resolve(cwd, source.filePath);
-    await openSourceFile(fullPath, source.line);
-  } else if (!options.quietWhenNoSource) {
-    vscode.window.showWarningMessage(
-      `Could not find source for <${element.tag}> "${(element.text || "").slice(0, 40)}"`,
-    );
-  }
-
-  // 3. Update sidebar
-  sidebarProvider.updateElement(element, source ? source.filePath : undefined);
+  // 1. Update the sidebar right away (selecting an element no longer opens its
+  //    source file, so nothing has to wait for the source lookup).
+  sidebarProvider.updateElement(element);
   sidebarProvider.log(`element has ${element.children?.length || 0} direct children`);
   if (element.children && element.children.length > 0) {
     sidebarProvider.updateDOMTree(element.children);
@@ -485,7 +616,12 @@ async function handleElementPicked(
     sidebarProvider.expandToNode(element.cssSelectorPath);
   }
 
-  // 4. Update breadcrumb
+  // 2. Resolve the source in the background: it feeds the breadcrumb, MCP and the [DOM] commands.
+  const source = await sourceMapper.resolve(element, workspaceRoot());
+  sidebarProvider.log(`source: ${source ? source.strategy + " → " + source.filePath + ":" + source.line : "not found"}`);
+  sidebarProvider.log(`componentInfo: ${element.componentInfo ? element.componentInfo.componentName + " (framework: " + element.componentInfo.framework + ", sourceFile: " + element.componentInfo.sourceFile + ")" : "null"}`);
+
+  // 3. Update breadcrumb
   const components: ComponentPathEntry[] = [];
   if (element.componentInfo?.componentPath) {
     for (const name of element.componentInfo.componentPath) {
@@ -502,7 +638,7 @@ async function handleElementPicked(
   }
   breadcrumb.show(components);
 
-  // 5. Remember it for the [DOM] commands, and publish it to MCP clients
+  // 4. Remember it for the [DOM] commands, and publish it to MCP clients
   rememberPick(element, source);
   publishSelection(element, source, currentPageUrl || "http://localhost", (m) => sidebarProvider.log(m));
 }
@@ -669,6 +805,7 @@ function recordStyleChange(selector: string, property: string, value: string): v
 }
 
 export function deactivate() {
+  if (cursorInjection) void detachFromCursorTab(cursorInjection);
   bridge?.dispose();
   bridge = undefined;
   breadcrumb.dispose();

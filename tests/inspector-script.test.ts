@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as vm from 'vm';
-import { inspectorScriptTag } from '../src/browser/proxy';
+import { inspectorScript, inspectorScriptTag } from '../src/browser/proxy';
 import { channelToken } from '../src/browser/page-channel';
 
 /** Tests the script exactly as the proxy injects it into pages. */
@@ -71,5 +71,20 @@ describe('stack frame parsing (React owner stacks)', () => {
     const HASHED = topLevelVar('HASHED_CLASS_RE') as RegExp;
     for (const c of ['css-1x2y3z', 'sc-bdfBwQ', '_button_1x2y3_1', 'Button_primary__a1b2c']) expect(HASHED.test(c)).toBe(true);
     for (const c of ['btn', 'btn-primary', 'hover:text-white', 'w-1/2', 'bg-[#0a0a0f]/80']) expect(HASHED.test(c)).toBe(false);
+  });
+});
+
+describe('channel base', () => {
+  it('is same-origin for proxied pages', () => {
+    expect(body).toContain("var DI_CHANNEL = '' + '/__dom-inspector__/';");
+  });
+
+  it("points at the proxy for pages attached in Cursor's browser, and injects once per session", () => {
+    const attached = inspectorScript('http://127.0.0.1:4242');
+    expect(attached).toContain("var DI_CHANNEL = 'http://127.0.0.1:4242' + '/__dom-inspector__/';");
+    expect(attached).not.toContain('__DI_BASE__');
+    expect(attached).not.toContain('__DI_TOKEN__');
+    expect(attached).toContain(`if (window.__domInspectorToken === '${channelToken()}') return;`);
+    expect(() => new vm.Script(attached)).not.toThrow();
   });
 });

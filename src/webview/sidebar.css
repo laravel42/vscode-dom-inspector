@@ -27,7 +27,7 @@
     /* VS Code's default webview stylesheet sets body { padding: 0 20px }; the
        "* { padding: 0 }" reset above loses to it, so clear the sides explicitly.
        The bottom keeps room for .version-label. */
-    padding: 0 0 20px;
+    padding: 0 0 88px;  /* room for the bottom bar */
   }
   h3 {
     font-size: var(--fs-small);
@@ -40,6 +40,26 @@
   }
   .section { padding: 8px 12px; border-bottom: 1px solid var(--border); }
   .empty-state { padding: 24px 12px; text-align: center; color: var(--text-muted); }
+  .empty-title { color: var(--text); font-weight: 600; margin-bottom: 4px; }
+  .empty-actions { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 16px; }
+  .btn {
+    padding: 6px 12px; font: var(--fs)/1.4 system-ui; cursor: pointer; border-radius: 4px;
+  }
+  .btn[hidden] { display: none; }
+  .btn-primary {
+    color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #0e639c); border: none;
+  }
+  .btn-primary:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+  .btn-secondary { color: var(--text); background: transparent; border: 1px solid var(--border); }
+  .btn-secondary:hover { background: rgba(128,128,128,0.15); }
+  /* Detach: full width, solid red, can't be missed while a page is connected */
+  .btn-danger {
+    display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%;
+    padding: 8px 12px; font: 600 13px/1.2 system-ui; color: #fff;
+    background: var(--vscode-statusBarItem-errorBackground, #c42b1c); border: none;
+  }
+  .btn-danger:hover { filter: brightness(1.12); }
+  .btn-danger svg { width: 16px; height: 16px; fill: currentColor; flex-shrink: 0; }
 
 
 
@@ -190,7 +210,6 @@
   }
   .dt-panel { display: none; flex: 1; overflow-y: auto; }
   .dt-panel.active { display: block; }
-  #tab-console.active { display: flex; flex-direction: column; }
 
   /* Computed tab filter input */
   .computed-filter-input {
@@ -224,50 +243,20 @@
   .cs-accordion-body { display: none; padding: 0 8px 4px 20px; }
   .cs-accordion.open > .cs-accordion-body { display: block; }
 
-  /* URL omnibox — Chrome style */
-  .url-bar { position: relative; padding: 8px 12px; border-bottom: 1px solid var(--border); }
-  .url-omni {
-    display: flex; align-items: center; gap: 8px;
-    background: var(--vscode-input-background, var(--bg-secondary));
-    border: 1px solid var(--border); border-radius: 20px;
-    padding: 0 12px; height: 32px; transition: border-color 0.15s;
+  /* Bottom bar: detach button (left) and build stamp (right), pinned to the bottom */
+  .bottom-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    display: flex; flex-direction: column; gap: 6px; padding: 8px 12px;
+    background: var(--bg-secondary, var(--bg)); border-top: 1px solid var(--border);
   }
-  .url-omni:focus-within { border-color: var(--accent); }
-  .url-omni .url-icon {
-    flex-shrink: 0; width: 14px; height: 14px; color: var(--text-muted); display: flex; align-items: center;
+  .bottom-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .page-status {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font: var(--fs-small)/16px var(--mono); color: var(--text);
   }
-  .url-omni .url-icon svg { width: 14px; height: 14px; fill: currentColor; }
-  .url-omni input {
-    flex: 1; border: none; outline: none; background: transparent;
-    font: var(--fs)/1 var(--mono); color: var(--text); min-width: 0;
-  }
-  .url-omni input::placeholder { color: var(--text-muted); opacity: 0.6; }
-  .url-dropdown {
-    display: none; position: absolute; left: 12px; right: 12px; top: calc(100% - 2px);
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: 0 0 8px 8px; max-height: 280px; overflow-y: auto;
-    z-index: 10; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  }
-  .url-dropdown.visible { display: block; }
-  .url-dropdown-item {
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 12px; font: var(--fs)/1.4 var(--mono); color: var(--text);
-    cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    transition: background 0.06s;
-  }
-  .url-dropdown-item:hover, .url-dropdown-item.active {
-    background: var(--highlight-bg);
-  }
-  .url-dropdown-item .url-item-icon {
-    flex-shrink: 0; width: 14px; height: 14px; color: var(--text-muted); display: flex; align-items: center;
-  }
-  .url-dropdown-item .url-item-icon svg { width: 14px; height: 14px; fill: currentColor; }
-  .url-dropdown-item .match { color: var(--accent); font-weight: 500; }
-
-  /* Build/version stamp, pinned to the bottom of the sidebar */
+  .page-status::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--green); }
+  .page-status[hidden] { display: none; }
   .version-label {
-    position: fixed; left: 0; right: 0; bottom: 0;
-    padding: 2px 12px; font: var(--fs-small)/16px var(--mono); text-align: right;
-    color: var(--text-muted); background: var(--bg); border-top: 1px solid var(--border);
-    user-select: text; z-index: 10;
+    margin-left: auto; font: var(--fs-small)/16px var(--mono); color: var(--text-muted);
+    white-space: nowrap; user-select: text;
   }

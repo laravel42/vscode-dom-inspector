@@ -1,4 +1,9 @@
 (function(){
+// Once per page and session: injecting again with the same token is a no-op
+// (pages attached in Cursor's browser get the script both immediately and on
+// every new document).
+if (window.__domInspectorToken === '__DI_TOKEN__') return;
+window.__domInspectorToken = '__DI_TOKEN__';
 // ---------------------------------------------------------------------------
 // OverlayRenderer
 // ---------------------------------------------------------------------------
@@ -703,20 +708,29 @@ var FrameworkDetector = (function(){
 // browser, Cursor's browser tab, Simple Browser, Chrome…) they go over HTTP to
 // the proxy this page was served from: SSE for incoming, POST for outgoing.
 var DI_TOKEN = '__DI_TOKEN__';
-var DI_CHANNEL = '/__dom-inspector__/';
+// '' for pages served through the proxy (same origin); the proxy's own origin
+// (http://127.0.0.1:<port>) for pages attached directly in Cursor's browser.
+var DI_CHANNEL = '__DI_BASE__' + '/__dom-inspector__/';
 var DI_IN_PANEL = window.name === 'dom-inspector-panel';
 // One id per page load: duplicated tabs and reloads never collide.
 var DI_CLIENT = Math.random().toString(36).slice(2) + Date.now().toString(36);
 function channelUrl(route){ return DI_CHANNEL + route + '?t=' + encodeURIComponent(DI_TOKEN) + '&c=' + encodeURIComponent(DI_CLIENT); }
+// Page-level listeners, tracked so detachInspector() can remove every one.
+var diListeners = [];
+var diEventSource = null;
+var diDetached = false;
+function diOn(target, type, fn, opts){ target.addEventListener(type, fn, opts); diListeners.push([target, type, fn, opts]); }
+
 function postToParent(msg){
+  if (diDetached) return;
   if (DI_IN_PANEL){ try{ window.parent.postMessage(msg,'*'); }catch(e){ console.warn('[dom-inspector] Failed to post message:', e); } return; }
   try{ fetch(channelUrl('message'), {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(msg)}).catch(function(){}); }
   catch(e){ console.warn('[dom-inspector] Failed to send message:', e); }
 }
 function connectChannel(){
-  if (DI_IN_PANEL){ window.addEventListener('message', handleMessage); return; }
+  if (DI_IN_PANEL){ diOn(window, 'message', handleMessage); return; }
   try{
-    var es = new EventSource(channelUrl('events'));
+    var es = diEventSource = new EventSource(channelUrl('events'));
     es.onmessage = function(ev){ try{ handleMessage({data: JSON.parse(ev.data)}); }catch(e){} };
   }catch(e){ console.warn('[dom-inspector] Cannot open the inspector channel:', e); }
 }
@@ -868,6 +882,7 @@ function handleMessage(e){
     case 'set_style': if(msg.selector&&msg.property) setElementStyle(msg.selector,msg.property,msg.value||''); break;
     case 'toggle_style': if(msg.selector&&msg.property) toggleElementStyle(msg.selector,msg.property,!!msg.enabled); break;
     case 'ai_targets': if(typeof msg.primary==='string' && msg.primary) aiTargetLabel = msg.primary; break;
+    case 'detach': detachInspector(); break;
   }
 }
 
@@ -958,12 +973,31 @@ function onContextMenu(e){
 }
 
 function initContextMenu(){
-  document.addEventListener('contextmenu', onContextMenu, true);
-  document.addEventListener('mousedown', function(e){ if(ctxMenu && !isOverlayElement(e.target)) hideContextMenu(); }, true);
-  document.addEventListener('keydown', function(e){ if(e.key === 'Escape' && ctxMenu && ctxMenu.style.display !== 'none'){ e.preventDefault(); e.stopPropagation(); hideContextMenu(); } }, true);
-  window.addEventListener('scroll', hideContextMenu, true);
-  window.addEventListener('resize', hideContextMenu);
-  window.addEventListener('blur', hideContextMenu);
+  diOn(document, 'contextmenu', onContextMenu, true);
+  diOn(document, 'mousedown', function(e){ if(ctxMenu && !isOverlayElement(e.target)) hideContextMenu(); }, true);
+  diOn(document, 'keydown', function(e){ if(e.key === 'Escape' && ctxMenu && ctxMenu.style.display !== 'none'){ e.preventDefault(); e.stopPropagation(); hideContextMenu(); } }, true);
+  diOn(window, 'scroll', hideContextMenu, true);
+  diOn(window, 'resize', hideContextMenu);
+  diOn(window, 'blur', hideContextMenu);
+}
+
+// Leave the page as if the inspector had never been there: no listeners, no
+// connection, no overlays, menu or selection mark. Live style edits made from
+// the sidebar stay, since they're the user's.
+function detachInspector(){
+  if (diDetached) return;
+  stopInspection();
+  hideContextMenu();
+  diDetached = true;
+  for (var i = 0; i < diListeners.length; i++){ var l = diListeners[i]; try{ l[0].removeEventListener(l[1], l[2], l[3]); }catch(e){} }
+  diListeners = [];
+  if (diEventSource){ try{ diEventSource.close(); }catch(e){} diEventSource = null; }
+  var marked = document.querySelectorAll('.dom-inspector-selected');
+  for (var m = 0; m < marked.length; m++) marked[m].classList.remove('dom-inspector-selected');
+  var nodes = document.querySelectorAll('[data-dom-inspector-overlay="true"]');
+  for (var n = 0; n < nodes.length; n++) if (nodes[n].parentNode) nodes[n].parentNode.removeChild(nodes[n]);
+  try{ delete window.__domInspectorToken; }catch(e){ window.__domInspectorToken = undefined; }
+  console.log('[dom-inspector] detached');
 }
 
 function initInspector(){
