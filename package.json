@@ -182,10 +182,11 @@
   },
   "scripts": {
     "typecheck": "tsc -p . --noEmit",
+    "clean": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\"",
     "compile": "tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/webview','out/webview',{recursive:true,filter:(f)=>!f.endsWith('.ts')})\"",
     "watch": "tsc -watch -p tsconfig.build.json",
     "bundle-mcp": "node -e \"require('esbuild').buildSync({entryPoints:['src/mcp-server/index.ts'],bundle:true,platform:'node',target:'node18',format:'cjs',outfile:'mcp-server/index.js',external:[]})\"",
-    "build": "pnpm typecheck && pnpm compile && pnpm bundle-mcp",
+    "build": "pnpm typecheck && pnpm clean && pnpm compile && pnpm bundle-mcp",
     "test": "vitest --run",
     "bump": "npm version ${BUMP:-patch} --no-git-tag-version",
     "package": "pnpm bump && pnpm build && vsce package --allow-missing-repository --no-dependencies --baseContentUrl ."
