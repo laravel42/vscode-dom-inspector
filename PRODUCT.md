@@ -2,7 +2,7 @@
 
 This document describes what DOM Inspector is for, how it is built, and where it is going. Both the extension and this document are **IDE- and AI-provider-agnostic**, and the document is self-sufficient: an engineer, or an LLM, should be able to rebuild or extend the system for any VS Code–based IDE (VS Code, Kiro, Cursor, Windsurf…) from this document alone.
 
-It was written against the working tree of **2026-11-08** and updated for the **2026-11-13** reorganisation and release: one package, `dom-inspector` **0.7.21**, whose MCP server reports version **1.1.0**. Where behaviour differs from intent, the [Known gaps and limitations](#known-gaps-and-limitations) section says so explicitly. For installation and day-to-day usage, see [README.md](README.md).
+It was written against the working tree of **2026-11-08** and updated through the **2026-11-20** removal of source lookup and the Cursor-tab right-click fix: one package, `dom-inspector` **0.7.25**, whose MCP server reports version **1.1.0**. Where behaviour differs from intent, the [Known gaps and limitations](#known-gaps-and-limitations) section says so explicitly. For installation and day-to-day usage, see [README.md](README.md).
 
 The system has two programs, built from one package (all source in `src/`):
 
@@ -48,19 +48,19 @@ AI coding assistants make the gap wider. They are good at editing source, but th
 
 ### Value proposition
 
-> Point at it, land in the code, tell the AI what to change.
+> Point at it, and tell the AI what to change. It already knows where to look.
 
 - **Zero context switch**: the app, the inspector and the source all live in the editor.
 - **Zero setup**: no browser extension and no build plugin. The proxy injects the inspector into any page, and the extension registers its MCP server automatically (in Kiro).
-- **Element → source in one click**: framework debug data when available, heuristics when not.
+- **Precise element context, no setup**: component path, a unique selector, CSS path, XPath, matched rules and HTML go to the AI with the element. That's enough for an assistant working in the codebase to find the code itself.
 - **Visual tweaks become source edits**: style edits made in the sidebar are recorded and handed to the AI as a precise change list.
 - **AI-native context**: the selection is a first-class MCP resource with ready-made prompts, not a copy-paste ritual.
 
 ### Product principles
 
 1. **Local only.** Everything binds to `127.0.0.1`; nothing leaves the machine unless the user's AI client sends it.
-2. **Degrade gracefully.** Every strategy can fail, and the next one takes over. A failed MCP POST never blocks the UI.
-3. **Don't make users annotate their app**, but reward them if they do (`data-source="file:line"` is honoured).
+2. **Degrade gracefully.** Every step can fail without blocking the next. A failed MCP POST or AI hand-off never blocks the UI.
+3. **Never read the project's source.** DOM Inspector describes the live element; the AI assistant, which already works in the codebase, finds and edits the code.
 4. **Feel like DevTools.** Same colours, same tabs and the same mental model, so there's nothing new to learn.
 
 ### Non-goals (for now)
@@ -80,11 +80,11 @@ AI coding assistants make the gap wider. They are good at editing source, but th
 | Inspect the page open in Cursor's browser | ✅ Shipped | No URL, no proxy in front of the page: the inspector is injected through Cursor's internal `cursor.browserView.*` commands and re-injected on reloads. |
 | Detach from current page | ✅ Shipped | Removes the inspector from the page completely and releases the browser (panel, proxy, Cursor-tab injection). |
 | Hover overlays and tooltip | ✅ Shipped | |
-| Pick → resolve source | ✅ Shipped | Five-strategy chain; the `file:line` feeds the breadcrumb, MCP and Send to AI (selecting doesn't open the file). React 19 owner stacks + source maps give exact lines (100% on the test app); 90% without them. |
+| Source lookup (element → file:line) | ❌ Removed | DOM Inspector no longer reads the project's source. Snapshots and the MCP selection carry DOM context only (component path, selectors, styles, HTML), and the AI finds the code. |
 | Framework component info | ✅ Shipped | Detected from rendered DOM, not devtools hooks. React reports the owning component; Vue, Svelte and Angular are probed per element. |
 | Picking accuracy (keyboard navigation, SVG promotion, layers) | ✅ Shipped | ↑/↓ parent/child, ←/→ layers under the cursor, Enter to pick. |
 | Right-click menu → Send to AI / Send to… / Copy as Markdown / Inspect | ✅ Shipped | Markdown snapshot delivered through the assistant's own command: Claude Code, Cursor Chat, Kiro, Copilot Chat, Cline, Roo Code, Continue, a custom command, or the clipboard. |
-| Status-bar component breadcrumb | ⚠️ Partial | Only the leaf segment carries a source file; segments can't highlight in the page. |
+| Status-bar component breadcrumb | ✅ Shipped | Display only: the app's components from the root to the element. |
 | Sidebar: full DOM tree | ✅ Shipped | Renders and reveals the pick; clicking a row expands/collapses it and selects the element (like picking it). No search. |
 | Sidebar: Styles tab (matched rules, live edit, add property) | ⚠️ Partial | Edits always land as inline styles; toggling rule-sourced properties has no effect; some rules missed. |
 | Sidebar: Computed tab | ✅ Shipped | Non-default diff plus "Show all", category accordions, filter. |
@@ -99,12 +99,12 @@ AI coding assistants make the gap wider. They are good at editing source, but th
 
 ## Core user journeys
 
-### J1: "Where is this in the code?"
-1. Run **Open URL** with the dev server URL; the page renders in an editor tab.
-2. Run **Inspect Element** (or press the toolbar button), hover, and click the element.
-3. The sidebar shows the element (Styles, Computed, tree) and the status bar shows `App > … > Component`; clicking a component opens its file. The resolved `file:line` goes into AI snapshots and the MCP selection (selecting doesn't open the file).
+### J1: "Tell the AI about this element"
+1. Run **Open URL** with the dev server URL (or, in Cursor, open the app in its browser tab); the page renders in the editor.
+2. Run **Inspect Element** (or press the toolbar button), hover, and click the element. The sidebar shows it (Styles, Computed, tree) and the status bar shows `App > … > Component`.
+3. Right-click it → **Send to ‹assistant›**. The assistant gets a snapshot with the component path, selectors, classes, text, styles and HTML.
 
-**Success:** the right file and line, under 3 s, with no manual search.
+**Success:** the assistant finds the code from the snapshot, and nobody has to describe the element in prose.
 
 ### J2: "Make it look like this"
 1. Pick the element (J1).
@@ -137,7 +137,7 @@ AI coding assistants make the gap wider. They are good at editing source, but th
 │  │ Browser panel (webview)│ postMessage│ Extension host              │   │ Sidebar        │  │
 │  │  toolbar + relay script│◄──────────►│  extension.ts (orchestrator)│◄─►│ (webview view) │  │
 │  │  ┌──────────────────┐  │            │  BridgeChannel  (panel.ts)  │   │ Elements       │  │
-│  │  │ <iframe>         │  │            │  SourceMapper   (source-…)  │   │ Styles         │  │
+│  │  │ <iframe>         │  │            │  AI targets  (ai/targets)   │   │ Styles         │  │
 │  │  │  user's page     │  │            │  ComponentBreadcrumb        │   │ Computed       │  │
 │  │  │  + inspector.js  │  │            │  Reverse proxy  (proxy.ts) ─┼─┐ │                │  │
 │  │  │    (injected)    │  │            └──────────────┬──────────────┘ │ └────────────────┘  │
@@ -213,7 +213,7 @@ Views: activity-bar container `domInspector` (icon `media/inspect.svg`) holding 
 
 ### Orchestrator (`extension.ts`)
 
-Module-level state: `browserPanel`, `bridge`, `urlHistory` (max 50), `currentPageUrl` (the URL the user opened, not the current URL after in-page navigation), plus one `SourceMapper` and one `ComponentBreadcrumb`.
+Module-level state: `browserPanel`, `bridge`, `urlHistory` (max 50), `currentPageUrl` (the URL the user opened, not the current URL after in-page navigation), plus one `ComponentBreadcrumb`, and `lastPick` / `styleChanges` for the `[DOM]` commands.
 
 **`openUrl(url?)`**: prompts if no URL is given (default `http://localhost:5173`), moves the URL to the front of the history, persists it, and calls `startProxy(url)`. If a panel exists, its HTML is replaced and the panel revealed. Otherwise it creates `WebviewPanel("domInspectorBrowser", "🌐 <hostname>", ViewColumn.One, { enableScripts, retainContextWhenHidden })`, wraps it in a `BridgeChannel` and wires the handlers. When the panel is disposed, the bridge is disposed, the proxy stopped, and the sidebar told the browser has closed.
 
@@ -233,21 +233,9 @@ Module-level state: `browserPanel`, `bridge`, `urlHistory` (max 50), `currentPag
 | *connection lost / restored* | Show a status-bar warning, then a "reconnected" message for 3 s. |
 
 **`handleElementPicked(element)`**:
-1. Update the sidebar straight away (element, children, expand to `cssSelectorPath`). Selecting an element doesn't open its source file and doesn't warn when no source is found.
-2. `SourceMapper.resolve(element, firstWorkspaceFolder)` in the background; the result is logged to the output channel.
-3. Build the breadcrumb from `componentInfo.componentPath`: segments are `{ name, sourceFile }`, and only the owning component's segment (or, failing that, the leaf) gets a `sourceFile`.
-4. Remember the pick for the `[DOM]` commands, then `publishSelection()` (`ai/mcp.ts`): fire-and-forget `POST http://127.0.0.1:3100/selection` with a 2 s timeout. See [Contract](#contract-between-the-packages).
-
-**`openSourceFile(path, line)`** (`source/editor.ts`), now used only by the component breadcrumb, opens in `ViewColumn.Two`. `findClosingTagLine()` extends the selection from the opening line to the matching close, using these rules:
-- A trailing `/>` on the same line counts as self-closing.
-- A multi-line self-closing tag is detected by finding `/>` before the opening tag's `>`.
-- Otherwise it counts `<Tag` opens minus self-closes minus `</Tag>` closes until the depth returns to ≤ 0, scanning up to 200 lines.
-
-It then applies a whole-line decoration (`rgba(88,166,255,0.15)` with a border) that is removed after 10 s.
-
-**`recordStyleChange(selector, property, value)`**: keeps one entry per selector and property. The first time a property is edited, its pre-edit computed value is stored as `oldValue`; later edits only update `newValue`, so colour-picker drags collapse into one entry. The list is reset when a different element is picked (`rememberPick`). Each change is also POSTed to `/style-change` for MCP clients.
-
-**`runElementTask(kind)`** (`[DOM]` commands): uses `lastPick`, the last element picked or sent, and warns if there is none. It builds a task (`analyze`, `apply-styles` with the recorded changes, `remove`, or none for `select`) and calls `sendElementToAi(element, "primary", …, task)`. It needs neither the MCP server nor the clipboard.
+1. Update the sidebar (element, children, expand to `cssSelectorPath`).
+2. Show `componentInfo.componentPath` in the status-bar breadcrumb.
+3. Remember the pick for the `[DOM]` commands, then `publishSelection()` (`ai/mcp.ts`): fire-and-forget `POST http://127.0.0.1:3100/selection` with a 2 s timeout. See [Contract](#contract-between-the-packages).
 
 ### Reverse proxy (`browser/proxy.ts`)
 
@@ -318,9 +306,10 @@ If opening fails, the page opens in the panel and you're warned.
 1. Switches to the HTTP page channel and starts the proxy, which here only hosts the channel.
 2. Injects `inspectorScript(proxyOrigin())`. `__DI_BASE__` is replaced by the proxy's origin, so the page reaches the channel cross-origin. For proxied pages it stays empty (same origin).
 
-Two details follow from injecting both immediately and on new documents:
+Three details follow from injecting both immediately and on new documents:
 - The script runs once per page and session: it records the token in `window.__domInspectorToken` and returns if it's already set.
-- A tab still running an older session's inspector is reloaded, so only the new one runs.
+- A tab still running an older session's inspector is reloaded, so the new one can replace it.
+- Cursor keeps a tab's on-new-document scripts across Reload Window, so a script registered by an earlier session can still run on every page load, before the current one. Each copy exposes `window.__domInspectorDetach`; a newer copy calls it before starting, so only the newest stays, and a copy replaced before `DOMContentLoaded` never starts. The right-click listener sits on `window` in the capture phase, so it also runs before copies from 0.7.24 and earlier, which can't hand over. `deactivate()` awaits the removal of the on-new-document script.
 
 **Inspect Element** attaches automatically when no page is connected. If the page doesn't connect within 4 s, it warns and points to Output → DOM Inspector.
 
@@ -398,16 +387,15 @@ Each property is `{ property, value, enabled: true, editable: true }`. There is 
 #### FrameworkDetector
 `detect()` samples the first 400 elements under `<body>` for what frameworks leave on DOM nodes: `__reactFiber$`/`__reactInternalInstance$` keys (React), `__vueParentComponent`, `__vue__` or `__vue_app__` (Vue), and `__svelte_meta` (Svelte). Then it checks `window.ng` or `[ng-version]` (Angular), and finally the React devtools hook with registered renderers, or `window.__VUE__`. No devtools extension is needed.
 
-`getComponentInfo(el)` tries React, Vue, Svelte, then Angular **per element**, and returns the first hit. The result is `{ framework, componentName, componentPath[], sourceFile, sourceLine, stackUrl?, stackLine?, stackColumn? }`.
+`getComponentInfo(el)` tries React, Vue, Svelte, then Angular **per element**, and returns the first hit. The result is `{ framework, componentName, componentPath[] }`. Nothing about source files is collected.
 
 - **React**: find the fiber on the element or its nearest ancestor.
-  1. **Owner stack (React 19+).** Walk `fiber.return` until a fiber's `_debugStack` (an `Error` captured when its JSX was created) has a frame outside library code. Frames from `node_modules`, `.vite/deps`, `@vite/`, `@react-refresh`, `react-dom` and `jsx(-dev)-runtime` are skipped. That frame's URL, line and column are the JSX call site in the *served* module. The extension maps them through the source map (strategy `stack`). Library-internal elements (an icon's `<svg>`) reach the fiber created in app code, such as `<Eye … />`.
-  2. **`_debugSource` (React ≤ 18)**: the first one up the chain that isn't in `node_modules`.
-  3. **`componentName`** = the **owner**, from `_debugOwner` of the fiber found in step 1. This is the component whose render produced the element. If that isn't available, the stack frame's function name is used.
-  4. **`componentPath`**: every named function, `forwardRef` or `memo` type from the root down, with consecutive duplicates removed. For an icon this is e.g. `App > Nav > Eye`, with `componentName` `Nav`.
+  1. **Owner stack (React 19+), read in memory only.** Walk `fiber.return` until a fiber's `_debugStack` (an `Error` captured when its JSX was created) has a frame outside library code. Frames are skipped by URL (`node_modules/` and flattened chunk names like Turbopack's `node_modules__bun_….js`, `…next_dist…`, `.vite/deps`, `@vite/`, `@react-refresh`, `react-dom`, `jsx(-dev)-runtime`) and by function name (React's own `jsxDEV`, `jsx`, `createElement`, `react_stack_bottom_frame`…). That fiber is the one created by app code: an icon's `<svg>` reaches the `<Eye … />` the app rendered. Stack URLs are only used to classify frames; nothing is sent to the extension.
+  2. **`componentName`** = the **owner**, from `_debugOwner` of the fiber found in step 1. This is the component whose render produced the element. If that isn't available, the stack frame's function name is used.
+  3. **`componentPath`**: named function, `forwardRef` and `memo` types from the root down, with consecutive duplicates removed, keeping only components written in the app: those whose render function appears as a JSX call site in app code somewhere up the tree. This drops framework internals (Next.js routers, error boundaries, providers) and library wrappers (an icon component). For an icon this is e.g. `App > Nav`, with `componentName` `Nav`. If no app component can be identified (no owner stacks), the full path is kept.
 - **Vue 3**: `__vueParentComponent` on the element or an ancestor. Name from `type.name`, `__name` or the `__file` basename, then walk `parent`.
 - **Vue 2**: `__vue__` on the element or an ancestor. Name from `$options.name`, `_componentTag` or the `__file` basename, then walk `$parent`.
-- **Svelte**: `__svelte_meta` on the element or its nearest ancestor. File and line come from `loc`; names are file basenames.
+- **Svelte**: `__svelte_meta` on the element or its nearest ancestor; component names are the basenames of `loc.file`.
 - **Angular**: `ng.getOwningComponent(el)`, falling back to `ng.getComponent(el)`. Component hosts among the ancestors form the path.
 
 Every access is wrapped in `safeGet`, and each probe in its own `try`, so a failure returns `null` rather than throwing.
@@ -466,10 +454,9 @@ DOM Inspector never calls a model. It turns an element into a **snapshot file** 
 The extension pushes `{ type: "ai_targets", primary: "<label>" }` to the page on every `inspector_ready` and on configuration or extension changes, so the menu reads e.g. "Send to Cursor Chat".
 
 **`sendElementToAi(element, mode, sidebar, task?)`** in `extension.ts`. `mode` is `primary`, `pick` (quick pick of available targets, remembered) or `clipboard`. It:
-1. Updates the sidebar, resolves the source with `SourceMapper`, reads the element's lines (opening tag to matching close, at most 80 lines), remembers the pick, and POSTs the selection to the MCP bridge.
+1. Updates the sidebar, remembers the pick, and POSTs the selection to the MCP bridge.
 2. Builds the snapshot with the pure `buildElementMarkdown()`. It contains:
    - an optional `## Task`
-   - the source path and range with a fenced excerpt
    - identity: tag, id, classes, CSS path, XPath, component path, text, size
    - attributes
    - up to 30 matched rules as CSS, with disabled properties commented out
@@ -550,7 +537,7 @@ The `BridgeMessage` union (`types.ts`):
 
 | Type | Payload | Effect |
 |---|---|---|
-| `update_element` | `data, sourceFile` | Stores the selector (`cssSelectorPath \|\| selector`); renders active styles and the computed tab; expands the tree to the element. Shows the content area. |
+| `update_element` | `data` | Stores the selector (`cssSelectorPath \|\| selector`); renders active styles and the computed tab; expands the tree to the element. Shows the content area. |
 | `update_full_tree` | `tree` | Replaces the tree model and renders it with two levels expanded. |
 | `update_dom_tree` | `children` | Fallback root rendering, used only if no full tree has arrived. |
 | `children_loaded` | `selector, children` | Inserts child rows after the parent and resumes a pending expand-to-node. |
@@ -578,76 +565,9 @@ The `BridgeMessage` union (`types.ts`):
 
 **Tree**: rows carry `--depth` for indentation, a ▸/▾ toggle, a syntax-coloured `tag#id.class` label and a `(childCount)`. Each level shows at most `MAX_CHILDREN_PER_NODE = 500` nodes, followed by an "… N more nodes" indicator. Collapsing removes the following rows that are deeper.
 
-### Source mapper (`source/source-mapper.ts`)
-
-`resolve(element, workspaceRoot)` runs the strategies in order, each wrapped in `withTimeout(3000)`, and returns the first non-null `SourceLocation { filePath (workspace-relative), line (1-based), column?, strategy }`.
-
-0. **`stack`**: needs `componentInfo.stackUrl` and `stackLine`. `originalPositionFor()` in `stack-source.ts`:
-   - fetches the served module (2.5 s timeout, 20 MB cap)
-   - reads the last `sourceMappingURL`, either a `data:` URI (base64 or percent-encoded) or a URL fetched relative to the module
-   - decodes the VLQ `mappings` (index maps with `sections` are supported) and finds the segment covering the 1-based line and column
-   - resolves `sources[i]` against `sourceRoot` and the map URL
-
-   `sourcePathCandidates()` turns the resulting source into paths: `file://` URLs, Vite `/@fs/` paths, URL pathnames, `webpack://` paths and bare paths. `resolveFilePath()` maps those onto the workspace. Decoded maps are cached per module URL (40 entries).
-1. **`sourcemap`**: needs `componentInfo.sourceFile` and `sourceLine`. `resolveFilePath()` tries, in order:
-   - an absolute path inside the workspace
-   - the workspace-relative path
-   - the path with its leading `/` removed (Vite's `/src/...`)
-   - the same path under each first-level subdirectory that has a `package.json` (monorepos)
-   - an existing absolute path outside the workspace
-
-   If the file's basename ≠ `componentName`, the best `<componentName>.{ext}` file is used instead, because React's `_debugSource` points at the usage site.
-2. **`framework`**: `bestFileForComponent()` collects up to 20 files named `<componentName>.{tsx,jsx,vue,svelte}`. It ranks them by line score plus path preference: `src/` and shallow paths first, tests and configs last. If no such file exists, `findComponentDeclaration()` greps `-E` for `(function|class|const|let|var) <Name>` in `*.tsx *.jsx *.ts *.js *.mjs *.vue *.svelte`. It keeps only real declarations and picks the best path. Line scoring is then limited to that declaration: from its line up to the next top-level declaration.
-3. **`attribute`**: for each of `data-component`, `data-source`, `data-file`, `data-testid`, parse `value` or `value:line`. Try `resolveFilePath`, then `<value><ext>` by name. The line defaults to 1.
-4. **`grep`**: build search terms in specificity order:
-   - id (three quote variants)
-   - **the exact `class` attribute** (when it has several classes and is under 300 chars; static Tailwind strings appear verbatim)
-   - `data-testid`, `data-id`, `data-cy`, `data-test`, `name`, `aria-label`, `role`, `for`/`htmlFor` (values 2–79 chars)
-   - relative `href` and `src`
-   - `placeholder`
-   - `alt` (more than 3 chars)
-   - up to five non-trivial classes, longest first, plus the top three joined
-   - form `type`
-   - the first line of text (3–59 chars)
-   - the `<tag` for non-generic tags
-
-   For each term, run `grep -rn --include=<templates> --exclude-dir=<build dirs> -m 10 -F -- '<term>' .` with a 3 s `execSync` timeout. Skip the term if it has 0 or more than 50 hits. Score each hit:
-   - path preference
-   - +10 for a markup line
-   - +5 for `.tsx/.jsx/.vue/.svelte`
-   - −20 for import or require lines
-   - −15 for a `<Component …>` usage line
-   - +8 for a declaration line
-
-   Then:
-   - If the best hit is a `<Component>` usage or a default import, follow it to the best `<Component>.{ext}`.
-   - If several hits fall in the winning file, re-score that file with `bestLineInLines()`.
-   - If a hit lies on a continuation line of a multi-line opening tag, move up to the `<tag` line.
-
-**Line scoring (`bestLineInLines`)**:
-- **Candidates.** Every opening `<tag …>` block for the element's tag within the range is a candidate. A block runs from `<tag` to the first `>` outside quotes and braces, at most 12 lines.
-- **Scoring.** Each block starts at 1, then:
-
-  | Signal | Points |
-  |---|---|
-  | id | +100 |
-  | exact `class` string | +60; otherwise up to +30 for the share of classes found as whole tokens |
-  | each matching attribute value | +20 |
-  | text inside or just after the block | +15 |
-  | element has classes but the block has no `className`/`class`/`:class` | −10 |
-  | element has no class but the block sets one | −20 |
-- **Elements rendered by a child component.** The component path continues past the owner, e.g. `[App, Nav, Download]` with owner `Nav`. Then JSX component tags (`<Download`, `<t.icon`) are scored first, with +40 for the matching name. The same component-tag pass also runs when the host tag doesn't appear in range at all.
-- **Choosing a winner.** It takes a clear winner, or the only candidate. Otherwise it falls back to the first non-import line containing a distinctive needle (id, class string, attribute values, non-trivial classes, text), moved to its `<tag` line.
-
-**Trivial classes** (`isTrivialClass`) are Tailwind-style utilities (`flex`, `p-4`, `text-sm`, `w-[200px]`, `md:…`, `hover:…`, …). They are excluded from search terms because they appear everywhere.
-
-**`findLineInFile`**: the first line containing a needle that is (for markup needles) a markup line and is not an import. The needles, in order, are: id variants, test id, name, aria-label, placeholder, alt, relative href, non-trivial classes, `<tag` (except div and span), then text. Falls back to line 1.
-
-Excluded directories everywhere: `node_modules .git dist build .next .nuxt .svelte-kit out .output coverage .cache .turbo vendor`.
-
 ### Component breadcrumb (`ui/breadcrumb.ts`)
 
-A left-aligned status bar item (priority 100) showing `$(symbol-class) A > B > C`. Clicking it runs `domInspector.breadcrumbClicked`, which is re-registered on every `show()`. With one segment, the callback runs immediately; with several, a quick pick lists them, with each segment's source file as its description. The extension's callback opens the segment's `sourceFile` at line 1 if it has one.
+A left-aligned status bar item (priority 100) showing `$(symbol-class) A > B > C`: the selected element's `componentPath`, hidden when empty. Display only; it has no command.
 
 ### Shared types (`types.ts`)
 
@@ -667,13 +587,7 @@ interface ElementData {
   activeStyles?: ActiveStyleRule[];
 }
 
-interface ComponentInfo { framework: FrameworkType; componentName: string; componentPath: string[];
-                          sourceFile: string | null; sourceLine: number | null;
-                          // React 19: JSX call site in the *served* module, mapped by the host
-                          stackUrl?: string | null; stackLine?: number | null; stackColumn?: number | null; }
-interface ComponentPathEntry { name: string; sourceFile: string | null; }
-interface SourceLocation { filePath: string; line: number; column?: number;
-                           strategy: 'stack' | 'sourcemap' | 'framework' | 'attribute' | 'grep'; }
+interface ComponentInfo { framework: FrameworkType; componentName: string; componentPath: string[]; }
 interface ActiveStyleRule { selector: string; properties: ActiveStyleProperty[]; }
 interface ActiveStyleProperty { property: string; value: string; enabled: boolean; editable: boolean; }
 interface ChildSummary { tag: string; id: string | null; classNames: string[]; childCount: number; selectorPath: string; }
@@ -774,7 +688,7 @@ There are no MCP **tools** yet; see the roadmap.
 
 Pure `StoredSelection → string` functions.
 
-- **`formatSelectionAsMarkdown`**: `## Selected DOM Node`, then bullets for Page, Title (the source `file:line`), Tag, ID, Classes, Text, Role, aria-label, Selector, XPath and Nearby context. After that comes `### Attributes` as a list, `### HTML` as a fenced `html` block (≤ 1,500 chars, with `<!-- truncated -->` if cut), and `_Selected at <ISO>_`.
+- **`formatSelectionAsMarkdown`**: `## Selected DOM Node`, then bullets for Page, Title (if sent; the extension doesn't), Tag, ID, Classes, Text, Role, aria-label, Selector, XPath and Nearby context. After that comes `### Attributes` as a list, `### HTML` as a fenced `html` block (≤ 1,500 chars, with `<!-- truncated -->` if cut), and `_Selected at <ISO>_`.
 - **`formatAnalysisPrompt`**: the context plus six numbered asks: purpose, accessibility, a Playwright locator (prefer role or test id), a Cypress locator, fragile patterns, and improvements.
 - **`formatApplyStylesPrompt`**: if there are no changes, explains how to record some. Otherwise it lists `` `prop`: `old|(none)` → `new` `` and instructs the AI to find the source, apply each change, convert to Tailwind if the project uses it, update CSS modules or styled-components if relevant, preserve conventions, and only touch the listed properties.
 - **`formatRemoveNodePrompt`**: find, remove the element and its children, clean up unused imports, variables and styles, preserve formatting, and note any layout impact.
@@ -789,7 +703,6 @@ The extension maps `ElementData` to `SelectedDomNode` in `publishSelection()` (`
 | `SelectedDomNode` | Source in the extension | Note |
 |---|---|---|
 | `url` | `currentPageUrl` (or `"http://localhost"`) | The URL the user opened, not the proxied or navigated URL. |
-| `title` | `` `${source.filePath}:${source.line}` `` | Overloaded to carry the resolved source location; empty when unresolved. |
 | `tagName` | `element.tag` | |
 | `id` | `element.id` | |
 | `classes` | `element.classNames` | Omitted when empty. |
@@ -822,9 +735,8 @@ The port is **3100 on both sides**. The server honours `DOM_INSPECTOR_PORT`; the
 2. On hover, rAF → overlay + tooltip → `element_hovered` → sidebar (no visible effect today).
 3. On click → `getFullData` + `getComponentInfo` → `element_picked` → the page stops picking and pins the element.
 4. The sidebar gets `update_element` straight away, renders active styles and computed values, and expands the tree to the element.
-5. The host then runs `SourceMapper.resolve` in the background for the breadcrumb, MCP and the `[DOM]` commands; it doesn't open the file.
-6. The breadcrumb shows the component path.
-7. `POST /selection` → the server replaces its state and resets style changes.
+5. The breadcrumb shows the component path.
+6. `POST /selection` → the server replaces its state and resets style changes.
 
 ### Edit a style
 1. Change a value in Styles → `set_style` → the host forwards it to the page (`el.style.setProperty`) **and** sends `POST /style-change`.
@@ -848,7 +760,8 @@ The port is **3100 on both sides**. The server honours `DOM_INSPECTOR_PORT`; the
 | Type-check | `pnpm typecheck` (`tsc -p . --noEmit` over all of `src/`, the MCP server included) | |
 | Compile | `pnpm compile` (`tsc -p tsconfig.build.json`: CommonJS, ES2022, strict, `src/mcp-server/` excluded), then copy `src/webview/` assets to `out/webview/` | `out/**/*.js` + source maps + webview assets |
 | Bundle MCP | `pnpm bundle-mcp`: esbuild `src/mcp-server/index.ts` → `mcp-server/index.js` (bundle, platform node, target node18, format cjs, no externals) | One self-contained file. |
-| Build | `pnpm build` = typecheck + compile + bundle | |
+| Clean | `pnpm clean`: deletes `out/` | Compiled files of deleted sources can't reach the VSIX |
+| Build | `pnpm build` = typecheck + clean + compile + bundle | |
 | Test | `pnpm test` (`vitest --run`, `vscode` aliased to `tests/__mocks__/vscode.ts`) | |
 | Bump | `pnpm bump` = `npm version ${BUMP:-patch} --no-git-tag-version` | `package.json` version +1 patch (or `BUMP=minor`) |
 | Package | `pnpm package` = bump + build + `vsce package --allow-missing-repository --no-dependencies --baseContentUrl .` | `dom-inspector-<version>.vsix` (git-ignored), new version every run |
@@ -882,8 +795,6 @@ Tests use **vitest** (several suites with **fast-check**) and live in `tests/`. 
 | `page-channel.test.ts` | The proxy and HTTP page channel against a live upstream: injection, token checks, SSE delivery, client tracking (`browser/proxy.ts`, `browser/page-channel.ts`, `browser/browsers.ts`) |
 | `inspector-script.test.ts` | The script as the proxy injects it parses as JavaScript and carries the session token; stack-frame and library-URL regexes; hashed-class detection; attribute-selector escaping (`webview/inspector.js`) |
 | `sidebar-style.test.ts` | Every px spacing value in `webview/sidebar.css` is a positive integer |
-| `source-mapper-real.test.ts` | Same-class links told apart by text, multi-line opening tags, line ranges, components declared inside other files, Tailwind class-string grep, on a temp fixture project (`source/source-mapper.ts`) |
-| `stack-source.test.ts` | VLQ decode round-trip (property-based), segment lookup, `sourceMappingURL`/data-URI parsing, path candidates, index maps, end-to-end fetch + map from a local HTTP server (`source/stack-source.ts`) |
 
 The MCP server has **no tests**. There are no extension-host integration tests and no CI configuration in the repo.
 
@@ -896,7 +807,7 @@ The MCP server has **no tests**. There are no extension-host integration tests a
 3. **Inspector footprint markers**: `data-dom-inspector-overlay="true"`, `.dom-inspector-selected`, `#dom-inspector-cursor`, `data-dom-inspector-disabled_*`, `data-dom-inspector`. `isOverlayElement()` and the active-styles collector rely on them to ignore the inspector's own nodes and rules.
 4. **Capture-phase listeners** with `stopImmediatePropagation` are what stop clicks from reaching the app while picking.
 5. **Selectors are recomputed, not stored as node references.** Everything that crosses the bridge identifies elements by `cssSelectorPath` or `selector` and re-queries with `document.querySelector`. DOM changes between messages can therefore retarget or miss.
-6. **Every error is swallowed**, by design: framework accessors (`safeGet`), cross-origin stylesheets, grep failures and MCP POSTs. The UI never crashes, but failures only show up in Output → DOM Inspector.
+6. **Every error is swallowed**, by design: framework accessors (`safeGet`), cross-origin stylesheets and MCP POSTs. The UI never crashes, but failures only show up in Output → DOM Inspector.
 7. **Theme**: the browser panel is hard-coded dark (`#0d1117`, GitHub-dark palette). The sidebar follows VS Code theme tokens.
 8. **Webview security**: neither webview sets a Content-Security-Policy.
 
@@ -914,8 +825,7 @@ The MCP server has **no tests**. There are no extension-host integration tests a
 | Port sharing | First MCP instance owns the bridge port; others follow it via `/health`. Unrelated programs are left alone | A non-DOM-Inspector program on the port makes the bridge unavailable | Clear log message; `domInspector.mcp.port` |
 | Workspace writes | The host editor's MCP config (`.kiro`, `.cursor` or `.vscode`) on activation; `.dom-inspector/` snapshots on send; other clients only on request | Unexpected files in user repos | `mcp.autoConfigure: false`; snapshots folder ignores itself; unparsable configs are never overwritten |
 | Clipboard | Written only for **Copy as Markdown**, the clipboard target, or a failed delivery | Replaces clipboard content | User-initiated |
-| Shell | `grep` through `execSync` with a single-quoted term | Shell injection | Quoting via `'…'` with `'\''` escaping. |
-| Data egress | None by the tool itself | The AI client may send selection data (HTML, text, file paths) to its model provider | User's AI client policy. |
+| Data egress | None by the tool itself | The AI client may send selection data (HTML, text, styles) to its model provider | User's AI client policy. |
 
 ---
 
@@ -929,7 +839,7 @@ The MCP server has **no tests**. There are no extension-host integration tests a
 5. **Toggling stylesheet properties has no effect.** `toggleElementStyle` only touches inline styles. Unchecking a property that came from a CSS rule does nothing visible unless it was edited first.
 6. **Every edit becomes an inline style.** Editing a value inside `.btn { … }` sets `style="…"` on the element instead of changing the rule. That is fine as a preview, but the UI doesn't make it clear.
 7. **Style change records are lossy.** There's no `oldValue`, toggles aren't recorded, and colour-picker drags produce one entry per `input` event.
-8. **Breadcrumb segments lack data.** Only the owning (or leaf) segment has a `sourceFile`, and segments can't highlight anything in the page.
+8. *(Resolved: the breadcrumb is now display only.)*
 9. **Sidebar inspect button drifts.** `stop_inspect` is a no-op, so the sidebar toggle and the page state can disagree.
 10. *(Resolved: the unreachable `navigateSourceForSelector` was removed.)*
 
@@ -942,13 +852,9 @@ The MCP server has **no tests**. There are no extension-host integration tests a
 13. *(Resolved: the unmounted force-state code was removed.)*
 14. **Selector uniqueness is checked at pick time only.** A later DOM change (list reorder, toggled state class) can make a stored `selector` or `cssSelectorPath` stale.
 15. **Framework detection limits**:
-    - Owner stacks need React 19 dev builds, and the dev server must serve source maps. Without them, resolution drops to the component and line-scoring strategies (90% exact on the test app).
-    - Identical repeated JSX inside one component, such as fifteen `<ArrowRight />` icons, can't be told apart without owner stacks.
-    - Vue/Angular templates carry no runtime line info, so their lines come from scoring.
-16. **Source mapper**:
-    - Only the first workspace folder is searched.
-    - `grep` and the directory walks are **synchronous** and block the extension host. `withTimeout` can't preempt synchronous work, so the worst case is several 3 s greps in a row. The `stack` strategy is async and usually answers first.
-    - It relies on `grep` being present (no Windows support).
+    - Filtering the component path to app components needs React 19 owner stacks (dev builds). Without them the path keeps every named component, framework internals included.
+    - Minified library components can still appear in the path (e.g. `Cc` from an icon library bundled into an app chunk).
+16. *(Resolved: source lookup was removed; DOM Inspector no longer reads the project's files or runs `grep`.)*
 
 ### Platform and environment
 17. One proxy session (one target origin) at a time. Several tabs can share it, with replies going to the tab that spoke last. One selection. Inside native browser views, editor keybindings like `Ctrl+Shift+I` may not reach the editor while the view has focus; use the sidebar or the right-click menu.
@@ -980,7 +886,6 @@ Most of the system is plain VS Code API and works unchanged in forks. The IDE-sp
 | Webviews, commands, keybindings, status bar | Standard APIs | No change. |
 | Browser view | `browser/browsers.ts`: `resolveBrowser` + `openInBrowser` | Add the fork's "open URL in browser editor" command. Without one, the panel or system browser works; the HTTP page channel needs nothing editor-specific. |
 | MCP protocol | `@modelcontextprotocol/sdk`, stdio | Works with any MCP client (Kiro, Cursor, VS Code, Claude Code, Claude Desktop…). |
-| Grep fallback | `grep -rn` through `execSync` | Use the editor's bundled ripgrep (`@vscode/ripgrep`) or `vscode.workspace.findFiles` + async reads for Windows support. |
 | Port sharing | `fetch` + `/health`, no OS tools | Works on Windows too. |
 
 ---
@@ -1003,11 +908,11 @@ Most of the system is plain VS Code API and works unchanged in forks. The IDE-sp
 7. **Auth for the bridge**: a random per-session token header, and CORS restricted to `null`/`vscode-webview://` origins. (The port is already configurable through `domInspector.mcp.port`.)
 8. **More AI targets**: Windsurf Cascade, Gemini Code Assist, Codex and Amazon Q, once their "add file to chat" commands are verified. Also `vscode.lm.registerMcpServerDefinitionProvider` for file-free MCP registration on VS Code ≥ 1.101.
 9. *(Done: the injected script is a plain file, `webview/inspector.js`, and tests run against it as served.)*
-10. **Async, multi-root source mapping**: ripgrep or `findFiles`, cancellation, and a cache of name → path. Show alternatives in a quick pick when line scoring has no clear winner.
-11. **Production builds**: offer an optional build plugin that stamps `data-source="file:line"` (strategy 3 already reads it) for apps that have no owner stacks or source maps.
+10. *(Dropped: source lookup was removed.)*
+11. *(Dropped: source lookup was removed.)*
 12. **Proxy**: rewrite absolute same-origin URLs, and add back/forward and an editable address bar.
 13. **MCP tools**: e.g. `get_selection`, `list_style_changes`, `clear_style_changes`, `highlight_selector`, so agents can act without the user running commands.
-14. **Settings**: proxy default URL, grep include and exclude lists, MCP port, auto-open source on/off.
+14. **Settings**: proxy default URL.
 
 ### Hygiene
 15. Add `license: "MIT"` to `package.json`, refresh `CHANGELOG.md` (it stops at 0.4.1), and add CI (build + test).

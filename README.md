@@ -1,8 +1,8 @@
 # DOM Inspector
 
-**Pick an element in your running app, find the line of code that renders it, and hand it to whichever AI assistant you use, without leaving the editor.**
+**Pick any element in your running app and send it to your AI assistant, with everything it needs to find it: component, selectors, styles and HTML. Without leaving the editor.**
 
-DOM Inspector is an extension for VS Code and its forks (Cursor, Kiro, Windsurf, VSCodium…), plus a small [Model Context Protocol](https://modelcontextprotocol.io) server. The extension opens your dev server inside an editor tab, overlays Chrome DevTools-style inspection on the page, finds the source file for whatever you click, and lets you edit CSS live. It is **AI-provider agnostic**: it never calls a model itself. Instead it writes a Markdown snapshot of the element and hands it to your assistant through that assistant's own "add to chat" command. Claude Code, Cursor Chat, Kiro, GitHub Copilot Chat, Cline, Roo Code and Continue work out of the box; anything else works through a configurable command, the clipboard, or MCP. The MCP server exposes the selected element and your style edits to any MCP client.
+DOM Inspector is an extension for VS Code and its forks (Cursor, Kiro, Windsurf, VSCodium…), plus a small [Model Context Protocol](https://modelcontextprotocol.io) server. The extension opens your dev server inside an editor tab, overlays Chrome DevTools-style inspection on the page, captures what you click (DOM path, selectors, component, styles, HTML), and lets you edit CSS live. It never reads your project's source; finding the code is left to your AI assistant. It is **AI-provider agnostic**: it never calls a model itself. Instead it writes a Markdown snapshot of the element and hands it to your assistant through that assistant's own "add to chat" command. Claude Code, Cursor Chat, Kiro, GitHub Copilot Chat, Cline, Roo Code and Continue work out of the box; anything else works through a configurable command, the clipboard, or MCP. The MCP server exposes the selected element and your style edits to any MCP client.
 
 > For the full product and implementation spec (architecture, protocols, data model, known gaps, roadmap), see [PRODUCT.md](PRODUCT.md).
 
@@ -17,7 +17,6 @@ DOM Inspector is an extension for VS Code and its forks (Cursor, Kiro, Windsurf,
 - [Installation](#installation)
 - [Usage](#usage)
 - [AI integration (MCP)](#ai-integration-mcp)
-- [How source resolution works](#how-source-resolution-works)
 - [Framework support](#framework-support)
 - [Configuration](#configuration)
 - [Development](#development)
@@ -44,17 +43,13 @@ Build output is not committed; `pnpm build` regenerates it: `out/` (the compiled
 ```
 .
 ├── src/
-│   ├── extension.ts             # activation, commands, orchestration (pick → source → sidebar → AI)
+│   ├── extension.ts             # activation, commands, orchestration (pick → sidebar → AI)
 │   ├── types.ts                 # shared types and the BridgeMessage union
 │   ├── browser/
 │   │   ├── proxy.ts             # reverse proxy: script injection, header stripping, redirects, WebSocket tunnel
 │   │   ├── page-channel.ts      # HTTP page channel (SSE + POST, per-session token) for browsers we don't own
 │   │   ├── browsers.ts          # browser choice (integrated / Cursor / Simple / panel / external)
 │   │   └── panel.ts             # DOM Inspector's own panel: HTML + typed message relay, heartbeat
-│   ├── source/
-│   │   ├── source-mapper.ts     # DOM element -> file:line (5-strategy chain)
-│   │   ├── stack-source.ts      # React owner-stack position -> original line (source maps)
-│   │   └── editor.ts            # open the file, select the element's tag range, read a snippet
 │   ├── ai/
 │   │   ├── context.ts           # element -> Markdown snapshot (provider-neutral)
 │   │   ├── targets.ts           # delivery to Claude Code, Cursor, Kiro, Copilot, Cline, Roo, Continue, custom, clipboard
@@ -98,9 +93,9 @@ Build output is not committed; `pnpm build` regenerates it: `out/` (the compiled
  │  Browser panel (webview)            Extension host                    Sidebar (webview)    │
  │  ┌──────────────────────┐   postMessage   ┌──────────────────┐  postMessage  ┌──────────┐ │
  │  │ toolbar + <iframe>   │◄──────────────►│ BridgeChannel     │◄────────────►│ Elements │ │
- │  │   ▲                  │                 │ SourceMapper      │               │ Styles   │ │
+ │  │   ▲                  │                 │ AI targets        │               │ Styles   │ │
  │  │   │ page + injected  │                 │ Breadcrumb        │               │ Computed │ │
- │  │   │ inspector script │                 │ editor highlight  │               │          │ │
+ │  │   │ inspector script │                 │ MCP publisher     │               │          │ │
  │  └───┼──────────────────┘                 └───────┬───────────┘               └──────────┘ │
  │      │ http://127.0.0.1:<random>                  │ HTTP POST /selection, /style-change    │
  └──────┼────────────────────────────────────────────┼─────────────────────────────────────────┘
@@ -115,7 +110,7 @@ Build output is not committed; `pnpm build` regenerates it: `out/` (the compiled
 1. **Open URL** starts a local reverse proxy that forwards to your dev server. HTML responses get the inspector script injected before `</body>`, and the `X-Frame-Options` and CSP headers are stripped so the page can render in an iframe.
 2. The browser panel is a webview with an iframe pointed at the proxy. A small relay script forwards typed messages between the page and the extension host.
 3. **Inspect Element** puts the page into picking mode. Hovering draws box-model overlays and a tooltip; clicking captures a full snapshot of the element: identity, attributes, box model, computed styles, matching CSS rules, XPath, CSS path and framework component info.
-4. The extension host shows the element in the sidebar and resolves it to a source file and line (used by the component breadcrumb, MCP and Send to AI; selecting doesn't open the file). It also updates the sidebar and the status-bar breadcrumb, and POSTs the selection to the MCP server's HTTP bridge.
+4. The extension host shows the element in the sidebar. It also updates the sidebar and the status-bar breadcrumb, and POSTs the selection to the MCP server's HTTP bridge.
 5. You send the element to your AI assistant: right-click it and choose **Send to ‹assistant›**, or run a `[DOM] …` command. The extension writes a Markdown snapshot and passes it to the assistant's own chat. MCP-capable assistants can also read the current selection from the MCP server at any time.
 
 ---
@@ -155,10 +150,6 @@ Common to all browsers:
 - **SVG icons**: hovering a `<path>` inside an icon selects the whole `<svg>`; press ↓ to go inside.
 - Once the page settles after load (no DOM mutations for 300 ms, or 2 s at most) the inspector reports ready. The extension then loads the full DOM tree and selects `<body>` so the sidebar has content straight away.
 
-### Source resolution
-- A five-strategy resolver (React owner stacks → framework debug info → component filename → `data-*` hints → scored grep) finds the file and line of each selected element. See [How source resolution works](#how-source-resolution-works).
-- Selecting an element doesn't open the file. The result goes into the AI snapshot (with the code excerpt), the MCP selection and the component breadcrumb, whose segments open their component's file when clicked.
-
 ### Sidebar (DevTools-style)
 Open it from the **DOM Inspector** icon in the activity bar.
 
@@ -173,10 +164,10 @@ Also in the sidebar:
 - **Your session persists.** Switching to another view in the activity bar and back keeps the tree, the selected element and the current tab. If VS Code recreates the view (e.g. after you close and reopen it), they're restored.
 - **Start screen**: with no page connected, the sidebar offers **Inspect the page open in Cursor's browser** (in Cursor) and **Open URL…**.
 - **Bottom bar**: while a page is connected, a full-width red **Detach from current page** button, and below it the attached page (green dot + host/path). Detaching removes the inspector from the page (listeners, overlays, right-click menu, selection outline, connection) and stops re-injecting it; the panel closes or the proxy stops, and the sidebar returns to its start screen. Next to it, the running build, e.g. `DOM Inspector v0.7.17`, with `(dev)` when it runs from source; use it to check that a reinstall took effect.
-- **Diagnostic log**: what the extension is doing (bridge messages, source-mapper results, MCP POST results) is logged, timestamped, to **Output → DOM Inspector**. It's the first place to look when something doesn't work.
+- **Diagnostic log**: what the extension is doing (bridge messages, AI hand-offs, MCP POST results) is logged, timestamped, to **Output → DOM Inspector**. It's the first place to look when something doesn't work.
 
 ### Component breadcrumb
-When a framework is detected, the status bar shows the component chain of the picked element (`$(symbol-class) App > Layout > Header > NavButton`). Clicking it opens a quick pick of the components; choosing the innermost one opens its source file when the framework reported one.
+When a framework is detected, the status bar shows the component chain of the picked element (`$(symbol-class) App > Layout > Header > NavButton`). It lists your app's own components; framework internals and library wrappers are left out.
 
 ### Send to any AI assistant
 Right-click any element in the inspected page (in whichever browser shows it):
@@ -191,7 +182,6 @@ Right-click any element in the inspected page (in whichever browser shows it):
 **Shift + right-click** shows the page's own context menu instead. Escape or a click elsewhere closes ours.
 
 What the assistant receives is a Markdown **snapshot** of the element:
-- the resolved source file and lines, plus the code excerpt
 - tag, id, classes, CSS path, XPath and component path
 - text and attributes
 - matched CSS rules and non-default computed styles
@@ -243,7 +233,6 @@ With the default `domInspector.ai.target: auto`, the assistant you last chose wi
 | Editor | VS Code ≥ 1.95, or a fork built on it (Kiro, Cursor, Windsurf…) |
 | Node.js | ≥ 20 for development; the bundled MCP server targets Node 18+ and is launched with `node` |
 | pnpm | for building (tested with pnpm 10+) |
-| `grep` | on `PATH`, used by the source mapper's fallback (macOS and Linux) |
 
 ---
 
@@ -307,7 +296,7 @@ and a `build` task in `.vscode/tasks.json` that runs `pnpm build`. The second `a
 1. **Start your dev server**, e.g. `npm run dev` → `http://localhost:5173`.
 2. **Open it**: run **DOM Inspector: Open URL** (`Ctrl+Shift+U` / `⌘⇧U`, or the **Open URL…** button on the sidebar's start screen) and type a URL or pick a recent one. In Cursor you can skip this step: open the app in Cursor's browser tab, and **Inspect** attaches to it.
 3. **Inspect**: run **DOM Inspector: Inspect Element** (`Ctrl+Shift+I` / `⌘⇧I`), use the sidebar's inspect button, or the panel toolbar's when you use the panel. Hover to preview, click to pick, Escape to cancel. You can also skip picking mode entirely: right-click any element → **Inspect element**.
-4. **Read the result**: the sidebar's Styles and Computed tabs show the element's CSS, and the status bar shows its component path (click a component to open its file).
+4. **Read the result**: the sidebar's Styles and Computed tabs show the element's CSS, and the status bar shows its component path.
 5. **Tweak styles**: in **Styles**, change values, toggle properties or add new ones. The page updates immediately.
 6. **Hand off to AI**: right-click the element → **Send to ‹assistant›**, or run **[DOM] Apply style edits to source** to have the assistant write your tweaks into the source. **[DOM] Analyze element** and **[DOM] Remove element from source** work the same way.
 
@@ -382,7 +371,7 @@ claude mcp add dom-inspector -e DOM_INSPECTOR_PORT=3100 -- node /absolute/path/t
 
 | Kind | Name | URI / arguments | Returns |
 |---|---|---|---|
-| Resource | `[DOM] Select node` | `dom-inspector://selected-node` | Markdown: page URL, source `file:line`, tag, id, classes, text, role, aria-label, selector, XPath, component path, attributes, an HTML snippet (≤1,500 chars) and a timestamp. |
+| Resource | `[DOM] Select node` | `dom-inspector://selected-node` | Markdown: page URL, tag, id, classes, text, role, aria-label, selector, XPath, component path, attributes, an HTML snippet (≤1,500 chars) and a timestamp. |
 | Prompt | `[DOM] Analyze node` | none | The selection plus a request for purpose, accessibility issues, Playwright and Cypress locators, fragile selector patterns and markup improvements. |
 | Prompt | `[DOM] Apply styles` | none | The selection plus the list of recorded `property: old → new` changes and instructions (Tailwind, CSS modules or styled-components aware; only touch the listed properties). |
 | Prompt | `[DOM] Remove node` | none | The selection plus instructions to remove it from the JSX/HTML and clean up unused imports, variables and styles. |
@@ -400,7 +389,7 @@ The bridge listens on `127.0.0.1:${DOM_INSPECTOR_PORT:-3100}`, accepts JSON bodi
 | `DELETE` | `/selection` | — | Clears the selection. |
 | `POST` | `/style-change` | `{ selector, property, newValue, oldValue? }` | Appends a change to the current selection; ignored if nothing is selected. |
 
-`SelectedDomNode` fields: `url` and `tagName` are required. Optional fields are `title`, `id`, `classes[]`, `text` (capped at 500 chars), `role`, `ariaLabel`, `selector`, `xpath`, `attributes{}`, `outerHTML` (capped at 2,000) and `nearbyContext` (capped at 1,000). The extension uses `title` for the resolved source `file:line` and `nearbyContext` for `Component: A > B > C`.
+`SelectedDomNode` fields: `url` and `tagName` are required. Optional fields are `title`, `id`, `classes[]`, `text` (capped at 500 chars), `role`, `ariaLabel`, `selector`, `xpath`, `attributes{}`, `outerHTML` (capped at 2,000) and `nearbyContext` (capped at 1,000). The extension uses `nearbyContext` for `Component: A > B > C`; it doesn't send `title`.
 
 ```bash
 # What's selected right now?
@@ -414,61 +403,18 @@ curl -s -X POST http://127.0.0.1:3100/selection \
 
 ---
 
-## How source resolution works
-
-`SourceMapper.resolve()` tries five strategies in order and stops at the first hit. Each one gets a 3-second budget. It searches the **first** workspace folder.
-
-| # | Strategy | Uses | Notes |
-|---|---|---|---|
-| 0 | **Owner stack** (`stack`) | React 19 `fiber._debugStack`: the stack trace React records where each element's JSX was created | The inspector finds the first stack frame in app code, which is a position in the *served* module, e.g. `/src/App.jsx?t=…:42:7`. The extension fetches that module, decodes its source map (inline or external, including index maps), and maps it to the original file and line. Elements rendered inside libraries (an icon's `<svg>`) resolve to the JSX that rendered the library component (`<Eye … />`). Works with any dev server that serves source maps: Vite, webpack and Next.js dev, etc. |
-| 1 | **Debug source** (`sourcemap`) | `componentInfo.sourceFile` + `sourceLine` (React ≤ 18 `_debugSource`, Svelte `__svelte_meta.loc`) | React's `_debugSource` points at where the component is *used*. If the file name doesn't match the component name, the mapper looks for `<ComponentName>.{tsx,jsx,vue,svelte}` and picks the best line inside it. |
-| 2 | **Component** (`framework`) | `componentInfo.componentName`, the component that *rendered* the element | Ranks every `<ComponentName>.{tsx,jsx,vue,svelte}` in the workspace by how well it contains the element. If there is none, it greps for the declaration (`function Nav`, `const Nav =`, `class Nav`) inside other files and scores lines within that declaration only. |
-| 3 | **DOM attribute** (`attribute`) | `data-component`, `data-source`, `data-file`, `data-testid` | Values may be `path`, `path:line` or a bare component name. |
-| 4 | **Grep** (`grep`) | id, the exact `class` string, test ids, `name`, `aria-label`, `role`, relative `href`/`src`, `placeholder`, `alt`, non-utility class names, form `type`, short text, uncommon tag names | Runs `grep -rnF` over template-like files (`*.tsx *.jsx *.vue *.svelte *.astro *.html *.erb *.hbs *.ejs *.pug *.blade.php *.twig *.njk *.mustache`), skipping `node_modules`, `dist`, `build`, `.next` and the like. File choice favours markup lines, component files and `src/`, and penalises tests, configs, imports and `<Component />` usages. A term with more than 50 hits is skipped as ambiguous. When several hits land in one file, the line is re-scored as below. |
-
-**Picking the line inside a file.** Every `<tag …>` opening block (up to 12 lines) for the element's tag is scored:
-
-| Signal | Points |
-|---|---|
-| id | +100 |
-| exact `class` string | +60, otherwise up to +30 for the share of classes present |
-| each matching attribute value (`href`, `alt`, test id…) | +20 |
-| element text inside or just after the tag | +15 |
-| `className` present on only one of the element and the tag | −10 to −20 |
-
-The best block wins. That is how three `<a className="hover:text-white">` links are told apart by their text, and a bare `<div>` by having no class. For an element rendered by a child component (component path `[App, Nav, Download]`, owner `Nav`), `<Download …/>`-style JSX tags are scored instead, with a +40 bonus for the matching name.
-
-**Measured accuracy** on `test-react` (React 19, Vite 8, Tailwind): 306 elements, with ground truth from a build-time line tag on every JSX element.
-
-| Situation | Exact line |
-|---|---|
-| React 19 dev (owner stack + source map) | **100%** (including icon internals) |
-| No owner stack (React ≤ 18, prod builds), component info available | **90%** (97% for elements written directly in your JSX) |
-| No component info at all (plain HTML, unknown framework) | **46%** |
-| Before this work, same app | 10.5% |
-
-**Getting better hits without React 19.** The cheapest win is a hint attribute that strategy 3 reads directly:
-
-```jsx
-<button data-source="src/components/SaveButton.tsx:12">Save</button>
-```
-
-Unique ids, `data-testid`s and static `className` strings help the line scoring.
-
----
-
 ## Framework support
 
 Detection looks at what is actually rendered: fiber keys on DOM nodes for React, `__vueParentComponent` / `__vue__` / `__vue_app__` for Vue, `__svelte_meta` for Svelte, `window.ng` / `[ng-version]` for Angular. It doesn't depend on a devtools extension being installed. Component info is looked up per element, with each framework tried in turn.
 
-| Framework | Component name | Component path | Source |
-|---|---|---|---|
-| React | The **owner**: the component whose render produced the element, from `_debugOwner` (or the stack frame's function name). An icon's `<svg>` therefore reports `Nav`, not `Eye`. | Named function, `forwardRef` and `memo` components from root to element, consecutive duplicates removed | React 19: owner stack + source map (exact line). React ≤ 18: `_debugSource`, ignoring `node_modules` |
-| Vue 2 / 3 | `name`, `__name`, `_componentTag`, or the SFC file name | Walks `parent` / `$parent` | `__file` (line found by scoring) |
-| Angular (dev) | `ng.getOwningComponent(el)` (falls back to `ng.getComponent`) | Component hosts among the ancestors | Line found by scoring |
-| Svelte (dev) | File name from `__svelte_meta.loc` on the element or its nearest ancestor | Distinct component files up the tree | `loc.file` and `loc.line` |
+| Framework | Component name | Component path |
+|---|---|---|
+| React | The **owner**: the component whose render produced the element, from `_debugOwner` (or the stack frame's function name). An icon's `<svg>` therefore reports `Nav`, not `Eye`. | Your app's function, `forwardRef` and `memo` components from root to element. With React 19 owner stacks, framework internals (Next.js routers, providers…) and library wrappers are left out. |
+| Vue 2 / 3 | `name`, `__name`, `_componentTag`, or the SFC file name | Walks `parent` / `$parent` |
+| Angular (dev) | `ng.getOwningComponent(el)` (falls back to `ng.getComponent`) | Component hosts among the ancestors |
+| Svelte (dev) | File name from `__svelte_meta.loc` on the element or its nearest ancestor | Distinct component files up the tree |
 
-Plain HTML and server-rendered templates (Blade, ERB, Twig, Handlebars…) work through the attribute and grep strategies.
+Plain HTML and server-rendered templates (Blade, ERB, Twig, Handlebars…) work too; they just have no component information.
 
 ---
 
@@ -495,10 +441,11 @@ Other fixed values: the proxy port is chosen by the OS (random, bound to `127.0.
 | Script | Does |
 |---|---|
 | `pnpm typecheck` | `tsc --noEmit` over all of `src/`, the MCP server included |
+| `pnpm clean` | Deletes `out/`, so compiled files of deleted sources never end up in the VSIX |
 | `pnpm compile` | `tsc -p tsconfig.build.json` → `out/` (everything except `src/mcp-server/`), then copies `src/webview/` assets to `out/webview/` |
 | `pnpm watch` | `tsc --watch` with the same config |
 | `pnpm bundle-mcp` | esbuild bundles `src/mcp-server/index.ts` and its dependencies into a single CJS file at `mcp-server/index.js` (Node 18 target) |
-| `pnpm build` | `typecheck` + `compile` + `bundle-mcp` |
+| `pnpm build` | `typecheck` + `clean` + `compile` + `bundle-mcp` |
 | `pnpm test` | `vitest --run` |
 | `pnpm bump` | `npm version ${BUMP:-patch} --no-git-tag-version` |
 | `pnpm package` | `bump` + `build` + `vsce package`: bumps the patch version (`BUMP=minor pnpm package` for minor) and writes `dom-inspector-<version>.vsix`. `.vscodeignore` is an allowlist: only `out/` JavaScript and webview assets, `mcp-server/index.js`, `media/`, `package.json`, the README, CHANGELOG and LICENSE ship. |
@@ -534,12 +481,12 @@ When you edit `inspector.js`:
 pnpm test
 ```
 
-The suite uses vitest (some suites with fast-check), with `vscode` aliased to a mock in `tests/__mocks__/`. Every suite exercises the real modules: the injected script as the proxy serves it, the proxy and page channel against a live upstream, source mapping and source maps, AI context and targets, MCP config writers, and the sidebar styles. The MCP server has no tests.
+The suite uses vitest (some suites with fast-check), with `vscode` aliased to a mock in `tests/__mocks__/`. Every suite exercises the real modules: the injected script as the proxy serves it, the proxy and page channel against a live upstream, Cursor browser attach, AI context and targets, MCP config writers, and the sidebar styles. The MCP server has no tests.
 
 ### Debugging tips
 
 - The sidebar footer shows which build is running (`v<version>`, plus `(dev)` from source). Check it first when a change doesn't seem to apply.
-- **Output → DOM Inspector** logs every bridge message, source-mapper result and MCP POST, with timestamps.
+- **Output → DOM Inspector** logs every bridge message, AI hand-off and MCP POST, with timestamps.
 - **Output → DOM Inspector** shows activation and MCP-config messages.
 - **Developer: Open Webview Developer Tools** shows `[webview]` and `[dom-inspector]` console logs from the browser panel and the page.
 - `curl http://127.0.0.1:3100/selection` shows exactly what the AI will see.
@@ -553,8 +500,6 @@ The suite uses vitest (some suites with fast-check), with `vscode` aliased to a 
 |---|---|
 | Blank panel or `Proxy error: connect ECONNREFUSED` | The dev server isn't running at that URL. Start it and reload. |
 | Page loads but picking does nothing | The page isn't HTML served through the proxy (e.g. you navigated to an absolute URL on another origin). Reload from the toolbar, or reopen the URL. |
-| "Could not find source for <tag>" | None of the five strategies matched. Add a `data-source="path:line"` attribute or a unique id or test id, and check the source lives in the **first** workspace folder. |
-| The wrong file opens | Without React 19 owner stacks, several files sharing the component's name (e.g. many `index.tsx`) are ranked by how well they contain the element, which can still guess wrong. Add a `data-source` hint. |
 | Nothing appears in the assistant after **Send to AI** | Check which assistant is used (**DOM Inspector: Choose AI Assistant…**) and **Output → DOM Inspector**. Some chats only accept context while their panel has an open conversation. If delivery fails, the context is on your clipboard. |
 | `[DOM] Apply styles` says "No style changes recorded" | Changes are cleared every time you pick a new element. Pick the element, edit in Styles, then run the command. |
 | "Inspector connection lost — waiting for page reload…" shows a few seconds after every load | A known false alarm: the page only sends one ready signal, so the 5-second heartbeat always times out. Picking still works. |
@@ -586,7 +531,7 @@ DOM Inspector is a **local development tool**. Don't point it at sites you don't
 - Attaching to Cursor's browser injects the inspector into that tab's page (and its later page loads) until you reload the window or close the tab.
 - The MCP HTTP bridge listens on `127.0.0.1:3100` with **no authentication and CORS that reflects any origin**. Any website open in your normal browser could read the current selection or overwrite it, and whatever it writes ends up in AI prompts. Treat the selection as untrusted input.
 - The MCP server never kills other processes. When its port is taken, it either shares the existing DOM Inspector bridge or reports the conflict.
-- **Send to AI** writes element snapshots (page HTML, text, styles, source excerpts) to `<workspace>/.dom-inspector/`, which ignores itself in git. What the assistant does with them, including sending them to its model provider, is up to that assistant.
+- **Send to AI** writes element snapshots (page HTML, text, styles) to `<workspace>/.dom-inspector/`, which ignores itself in git. What the assistant does with them, including sending them to its model provider, is up to that assistant.
 - On activation the extension writes this editor's MCP config (`.kiro/settings/mcp.json`, `.cursor/mcp.json` or `.vscode/mcp.json`) into every open workspace folder. The entry contains an absolute path on your machine, so add that folder to your project's `.gitignore` if you don't want it committed.
 - The clipboard is only written when you choose **Copy as Markdown**, pick the clipboard target, or a delivery fails.
 
