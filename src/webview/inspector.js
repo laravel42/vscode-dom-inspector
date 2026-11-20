@@ -64,7 +64,9 @@ var OverlayRenderer = (function(){
     if(!this._styleEl){
       this._styleEl = document.createElement('style');
       this._styleEl.dataset.domInspectorOverlay='true';
-      this._styleEl.textContent = '.dom-inspector-selected{outline:2px solid rgba(66,153,225,0.8)!important;outline-offset:-2px!important;background-color:rgba(66,153,225,0.08)!important;}';
+      // Outline only: never touch the element's own background (it replaced e.g. a dark
+      // <body> background with a near-transparent tint).
+      this._styleEl.textContent = '.dom-inspector-selected{outline:2px solid rgba(66,153,225,0.8)!important;outline-offset:-2px!important;}';
       root.appendChild(this._styleEl);
     }
     this.initialized = true;
@@ -451,13 +453,21 @@ var DOMExtractor = (function(){
     return {tag:el.tagName.toLowerCase(),id:el.id||null,classNames:getClassNames(el),width:rect.width,height:rect.height,boxModel:extractBoxModel(el)};
   };
   DE.prototype.getFullData = function(el){
-    var tag=el.tagName.toLowerCase(), id=el.id||null, cn=getClassNames(el), attrs=getAttributes(el);
-    var text=(el.textContent||'').slice(0,200), outerSnippet=el.outerHTML.slice(0,2000);
-    var selector=uniqueSelector(el), domPath=this.getDOMPath(el), children=this._getDirectChildren(el);
-    var boxModel=extractBoxModel(el), computedStyles=extractComputedStyles(el);
-    var xpath=computeXPath(el)||'', cssSelectorPath=computeCssSelectorPath(el)||'', allComputedStyles=extractAllComputedStyles(el);
-    var activeStyles=getActiveStyles(el);
-    return {selector:selector,tag:tag,id:id,classNames:cn,attrs:attrs,text:text,outerSnippet:outerSnippet,domPath:domPath,children:children,boxModel:boxModel,computedStyles:computedStyles,xpath:xpath,cssSelectorPath:cssSelectorPath,allComputedStyles:allComputedStyles,activeStyles:activeStyles,componentInfo:null};
+    // Read the element as the app renders it: without our selection mark (its
+    // outline would show up in the computed styles, its class in the HTML).
+    var pinned = !!(el.classList && el.classList.contains('dom-inspector-selected'));
+    if (pinned) el.classList.remove('dom-inspector-selected');
+    try {
+      var tag=el.tagName.toLowerCase(), id=el.id||null, cn=getClassNames(el), attrs=getAttributes(el);
+      var text=(el.textContent||'').slice(0,200), outerSnippet=el.outerHTML.slice(0,2000);
+      var selector=uniqueSelector(el), domPath=this.getDOMPath(el), children=this._getDirectChildren(el);
+      var boxModel=extractBoxModel(el), computedStyles=extractComputedStyles(el);
+      var xpath=computeXPath(el)||'', cssSelectorPath=computeCssSelectorPath(el)||'', allComputedStyles=extractAllComputedStyles(el);
+      var activeStyles=getActiveStyles(el);
+      return {selector:selector,tag:tag,id:id,classNames:cn,attrs:attrs,text:text,outerSnippet:outerSnippet,domPath:domPath,children:children,boxModel:boxModel,computedStyles:computedStyles,xpath:xpath,cssSelectorPath:cssSelectorPath,allComputedStyles:allComputedStyles,activeStyles:activeStyles,componentInfo:null};
+    } finally {
+      if (pinned) el.classList.add('dom-inspector-selected');
+    }
   };
   DE.prototype.getChildren = function(selector){ var el=document.querySelector(selector); return el?this._getDirectChildren(el):[]; };
   DE.prototype.getDOMPath = function(el){
