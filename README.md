@@ -1,6 +1,6 @@
 # DOM Inspector
 
-**Pick an element in your running app, land on the line of code that renders it, and hand it to whichever AI assistant you use, without leaving the editor.**
+**Pick an element in your running app, find the line of code that renders it, and hand it to whichever AI assistant you use, without leaving the editor.**
 
 DOM Inspector is an extension for VS Code and its forks (Cursor, Kiro, Windsurf, VSCodium…), plus a small [Model Context Protocol](https://modelcontextprotocol.io) server. The extension opens your dev server inside an editor tab, overlays Chrome DevTools-style inspection on the page, finds the source file for whatever you click, and lets you edit CSS live. It is **AI-provider agnostic**: it never calls a model itself. Instead it writes a Markdown snapshot of the element and hands it to your assistant through that assistant's own "add to chat" command. Claude Code, Cursor Chat, Kiro, GitHub Copilot Chat, Cline, Roo Code and Continue work out of the box; anything else works through a configurable command, the clipboard, or MCP. The MCP server exposes the selected element and your style edits to any MCP client.
 
@@ -100,7 +100,7 @@ Build output is not committed; `pnpm build` regenerates it: `out/` (the compiled
  │  │ toolbar + <iframe>   │◄──────────────►│ BridgeChannel     │◄────────────►│ Elements │ │
  │  │   ▲                  │                 │ SourceMapper      │               │ Styles   │ │
  │  │   │ page + injected  │                 │ Breadcrumb        │               │ Computed │ │
- │  │   │ inspector script │                 │ editor highlight  │               │ Console  │ │
+ │  │   │ inspector script │                 │ editor highlight  │               │          │ │
  │  └───┼──────────────────┘                 └───────┬───────────┘               └──────────┘ │
  │      │ http://127.0.0.1:<random>                  │ HTTP POST /selection, /style-change    │
  └──────┼────────────────────────────────────────────┼─────────────────────────────────────────┘
@@ -115,7 +115,7 @@ Build output is not committed; `pnpm build` regenerates it: `out/` (the compiled
 1. **Open URL** starts a local reverse proxy that forwards to your dev server. HTML responses get the inspector script injected before `</body>`, and the `X-Frame-Options` and CSP headers are stripped so the page can render in an iframe.
 2. The browser panel is a webview with an iframe pointed at the proxy. A small relay script forwards typed messages between the page and the extension host.
 3. **Inspect Element** puts the page into picking mode. Hovering draws box-model overlays and a tooltip; clicking captures a full snapshot of the element: identity, attributes, box model, computed styles, matching CSS rules, XPath, CSS path and framework component info.
-4. The extension host resolves the element to a source file and line, opens it in the second editor column and highlights the element's full tag range. It also updates the sidebar and the status-bar breadcrumb, and POSTs the selection to the MCP server's HTTP bridge.
+4. The extension host shows the element in the sidebar and resolves it to a source file and line (used by the component breadcrumb, MCP and Send to AI; selecting doesn't open the file). It also updates the sidebar and the status-bar breadcrumb, and POSTs the selection to the MCP server's HTTP bridge.
 5. You send the element to your AI assistant: right-click it and choose **Send to ‹assistant›**, or run a `[DOM] …` command. The extension writes a Markdown snapshot and passes it to the assistant's own chat. MCP-capable assistants can also read the current selection from the MCP server at any time.
 
 ---
@@ -132,12 +132,19 @@ Build output is not committed; `pnpm build` regenerates it: `out/` (the compiled
 | `cursor` | **Cursor's browser tab** (`workbench.action.openBrowserEditor`). |
 | `simple` | VS Code's **Simple Browser**. |
 | `panel` | **DOM Inspector's own panel**: reload button, URL display and an inspect toggle that pulses while picking. |
-| `external` | **Your system browser** (Chrome, Firefox…). Picks still jump to source in the editor. |
+| `external` | **Your system browser** (Chrome, Firefox…). Picks still reach the sidebar in the editor. |
 
-Every option loads the page through DOM Inspector's local proxy, which injects the inspector. Inside our panel, the inspector talks to the extension with `postMessage`. Everywhere else it uses a private HTTP channel on the proxy itself: Server-Sent Events in one direction and POSTs in the other, guarded by a per-session token. So picking, the right-click menu, jump to source, live style edits and Send to AI work the same in every browser.
+Every option loads the page through DOM Inspector's local proxy, which injects the inspector. Inside our panel, the inspector talks to the extension with `postMessage`. Everywhere else it uses a private HTTP channel on the proxy itself: Server-Sent Events in one direction and POSTs in the other, guarded by a per-session token. So picking, the right-click menu, live style edits and Send to AI work the same in every browser.
+
+### Inspect the page already open in Cursor's browser
+In Cursor you don't need a URL: open your app in Cursor's own browser tab as usual, then press **Inspect Element** (`Ctrl+Shift+I`, or the sidebar's inspect button). With no page connected yet, DOM Inspector attaches to the page open in that tab (the visible one, else the one you used last) and starts picking. **DOM Inspector: Inspect Cursor Browser Tab**, or the button in the sidebar's empty state, attaches without picking.
+
+- The page isn't proxied: DOM Inspector injects its inspector directly into the tab and keeps re-injecting it on reloads and navigation, so the page, its hot reload and its headers behave exactly as without DOM Inspector.
+- The inspector talks back to the extension over the same token-protected channel, reached cross-origin on `127.0.0.1`.
+- It uses Cursor's built-in browser commands (`cursor.browserView.*`). These are internal to Cursor and may change between versions; if they're missing, the button is hidden and **Open URL** works as before. Tabs opened by Cursor's agent belong to the agent and can't be attached.
 
 Common to all browsers:
-- The sidebar has an omnibox with **URL history**: the last 50 URLs persist across sessions, the 10 most recent show on focus, it filters as you type, and you can choose an entry with ↑/↓ and Enter. Deep links (`/dashboard?tab=2#x`) open at that path.
+- **Open URL** remembers your **URL history**: its prompt lists the last 50 URLs (persisted across sessions), filters as you type, and accepts a new URL. Deep links (`/dashboard?tab=2#x`) open at that path.
 - The proxy tunnels WebSocket upgrades to the dev server, so hot reload (Vite, webpack, Next.js…) keeps working.
 - The proxy follows redirects by rewriting `Location` headers to proxy-relative paths. It requests uncompressed HTML from upstream, and still handles gzip, brotli or deflate if the server compresses anyway.
 
@@ -148,24 +155,25 @@ Common to all browsers:
 - **SVG icons**: hovering a `<path>` inside an icon selects the whole `<svg>`; press ↓ to go inside.
 - Once the page settles after load (no DOM mutations for 300 ms, or 2 s at most) the inspector reports ready. The extension then loads the full DOM tree and selects `<body>` so the sidebar has content straight away.
 
-### Jump to source
-- A four-strategy resolver (framework debug info → component filename → `data-*` hints → scored grep) finds the file and line. See [How source resolution works](#how-source-resolution-works).
-- The file opens in **column two**. The editor selects from the opening tag to its matching closing tag, handling self-closing and multi-line tags (it scans up to 200 lines), and adds a blue highlight that fades after 10 seconds.
+### Source resolution
+- A five-strategy resolver (React owner stacks → framework debug info → component filename → `data-*` hints → scored grep) finds the file and line of each selected element. See [How source resolution works](#how-source-resolution-works).
+- Selecting an element doesn't open the file. The result goes into the AI snapshot (with the code excerpt), the MCP selection and the component breadcrumb, whose segments open their component's file when clicked.
 
 ### Sidebar (DevTools-style)
 Open it from the **DOM Inspector** icon in the activity bar.
 
 | Tab | What you get |
 |---|---|
-| **Elements** | The full DOM tree from `<html>`, with `<head>`, `<script>`, `<link>`, `<style>` and `<noscript>` skipped. The first two levels are expanded, other branches load children on demand, and each level shows up to 500 nodes. **Clicking a row** expands or collapses it and **selects the element**, exactly like picking it: it's outlined in the page, the Styles and Computed tabs update and its source opens (without a warning when a structural node such as `<body>` has none). The ▶ arrow only expands or collapses. Picking an element expands its ancestors and highlights its row. |
+| **Elements** | The full DOM tree from `<html>`, with `<head>`, `<script>`, `<link>`, `<style>` and `<noscript>` skipped. The first two levels are expanded, other branches load children on demand, and each level shows up to 500 nodes. **Clicking a row** expands or collapses it and **selects the element**, exactly like picking it: it's outlined in the page and the Styles and Computed tabs update. The ▶ arrow only expands or collapses. Picking an element expands its ancestors and highlights its row. |
 | **Styles** | The CSS rules that match the picked element, inline `element.style` first. Rules come from regular and adopted stylesheets, including inside `@media`, `@supports` and `@layer`. Each property has a checkbox to toggle it and a type-aware editor: a colour picker plus text for colours, a dropdown for keyword properties (`display`, `position`, `flex-direction`…), and free text otherwise. You can add a property to any rule (property and value inputs under each rule), with autocomplete over every CSS property the browser knows. Edits apply live in the page. |
 | **Computed** | A box-model diagram, then computed styles grouped into accordions (Typography, Box Model, Layout & Positioning, Colours & Backgrounds, Visual Effects, Transitions & Animations, Generated Content & Lists, Specialised, Other). By default it shows only values that differ from a bare element of the same tag; **Show all** lists everything, and there's a text filter. |
-| **Console** | A timestamped log of what the extension is doing: bridge messages, source-mapper results, MCP POST results. It's the first place to look when something doesn't work. |
 
 Also in the sidebar:
 - **Inspect button** (left of the tabs): starts picking, and stays lit while picking is on, however it was started: the button, `Ctrl+Shift+I`, or the panel toolbar. It turns off when you pick, press Escape, use the right-click menu or the page reloads. Click it again to stop picking.
-- **Your session persists.** Switching to another view in the activity bar and back keeps the tree, the selected element, the Console and the current tab. If VS Code recreates the view (e.g. after you close and reopen it), they're restored.
-- **Version footer**: the bottom line shows the running build, e.g. `DOM Inspector v0.7.14`, with `(dev)` when it runs from source. Use it to check that a reinstall took effect.
+- **Your session persists.** Switching to another view in the activity bar and back keeps the tree, the selected element and the current tab. If VS Code recreates the view (e.g. after you close and reopen it), they're restored.
+- **Start screen**: with no page connected, the sidebar offers **Inspect the page open in Cursor's browser** (in Cursor) and **Open URL…**.
+- **Bottom bar**: while a page is connected, a full-width red **Detach from current page** button, and below it the attached page (green dot + host/path). Detaching removes the inspector from the page (listeners, overlays, right-click menu, selection outline, connection) and stops re-injecting it; the panel closes or the proxy stops, and the sidebar returns to its start screen. Next to it, the running build, e.g. `DOM Inspector v0.7.17`, with `(dev)` when it runs from source; use it to check that a reinstall took effect.
+- **Diagnostic log**: what the extension is doing (bridge messages, source-mapper results, MCP POST results) is logged, timestamped, to **Output → DOM Inspector**. It's the first place to look when something doesn't work.
 
 ### Component breadcrumb
 When a framework is detected, the status bar shows the component chain of the picked element (`$(symbol-class) App > Layout > Header > NavButton`). Clicking it opens a quick pick of the components; choosing the innermost one opens its source file when the framework reported one.
@@ -178,7 +186,7 @@ Right-click any element in the inspected page (in whichever browser shows it):
 | **Send to ‹assistant›** | Adds the element to your assistant's chat input, in your *current* conversation. The label shows the assistant in use, e.g. "Send to Claude Code" or "Send to Cursor Chat". |
 | **Send to…** | Lets you pick another installed assistant; your choice is remembered for this workspace. |
 | **Copy as Markdown** | Puts the element context on the clipboard, to paste anywhere (ChatGPT, Gemini, a terminal agent, an issue…). |
-| **Inspect element** | Same as picking with the inspector: jumps to the source and updates the sidebar. |
+| **Inspect element** | Same as picking with the inspector: selects the element and updates the sidebar. |
 
 **Shift + right-click** shows the page's own context menu instead. Escape or a click elsewhere closes ours.
 
@@ -297,9 +305,9 @@ and a `build` task in `.vscode/tasks.json` that runs `pnpm build`. The second `a
 ## Usage
 
 1. **Start your dev server**, e.g. `npm run dev` → `http://localhost:5173`.
-2. **Open it**: run **DOM Inspector: Open URL** (`Ctrl+Shift+U` / `⌘⇧U`), or type the URL into the sidebar omnibox. The command's prompt defaults to `http://localhost:5173`.
+2. **Open it**: run **DOM Inspector: Open URL** (`Ctrl+Shift+U` / `⌘⇧U`, or the **Open URL…** button on the sidebar's start screen) and type a URL or pick a recent one. In Cursor you can skip this step: open the app in Cursor's browser tab, and **Inspect** attaches to it.
 3. **Inspect**: run **DOM Inspector: Inspect Element** (`Ctrl+Shift+I` / `⌘⇧I`), use the sidebar's inspect button, or the panel toolbar's when you use the panel. Hover to preview, click to pick, Escape to cancel. You can also skip picking mode entirely: right-click any element → **Inspect element**.
-4. **Read the result**: the source file opens beside the browser with the element highlighted. The sidebar's Styles and Computed tabs show its CSS, and the status bar shows its component path.
+4. **Read the result**: the sidebar's Styles and Computed tabs show the element's CSS, and the status bar shows its component path (click a component to open its file).
 5. **Tweak styles**: in **Styles**, change values, toggle properties or add new ones. The page updates immediately.
 6. **Hand off to AI**: right-click the element → **Send to ‹assistant›**, or run **[DOM] Apply style edits to source** to have the assistant write your tweaks into the source. **[DOM] Analyze element** and **[DOM] Remove element from source** work the same way.
 
@@ -308,7 +316,9 @@ and a `build` task in `.vscode/tasks.json` that runs `pnpm build`. The second `a
 | Command | Default keybinding | What it does |
 |---|---|---|
 | `DOM Inspector: Open URL` | `Ctrl+Shift+U` / `⌘⇧U` | Prompts for a URL, starts the proxy, opens or reuses the browser panel. |
-| `DOM Inspector: Inspect Element` | `Ctrl+Shift+I` / `⌘⇧I` | Enters picking mode (a browser panel must be open). |
+| `DOM Inspector: Inspect Element` | `Ctrl+Shift+I` / `⌘⇧I` | Enters picking mode. With no page connected, in Cursor it first attaches to the page open in Cursor's browser. |
+| `DOM Inspector: Inspect Cursor Browser Tab` | — | Attaches to the page open in Cursor's browser tab, without a URL or proxy (Cursor only). |
+| `DOM Inspector: Detach from Current Page` | — | Removes the inspector from the page and disconnects (same as the sidebar's bottom button). |
 | `[DOM] Send element to AI` | — | Sends the last picked element to your assistant. |
 | `[DOM] Analyze element (a11y, locators)` | — | Same, with a task: purpose, accessibility, Playwright and Cypress locators, fragile patterns, improvements. |
 | `[DOM] Apply style edits to source` | — | Same, with your recorded Styles-tab edits and instructions to apply them in the source. |
@@ -366,7 +376,7 @@ claude mcp add dom-inspector -e DOM_INSPECTOR_PORT=3100 -- node /absolute/path/t
 - If the owner exits, the next copy takes over the port.
 - No process is ever killed: if an unrelated program holds the port, the server says so. Pick another port with `domInspector.mcp.port`, which is written into the configs as `DOM_INSPECTOR_PORT`.
 
-> The bridge only exists while some MCP client is running the server. Without one, **Send to AI** and the `[DOM]` commands still work, because they don't use MCP; the Console tab just logs that the MCP POST failed. For testing, run `pnpm bundle-mcp && node mcp-server/index.js` yourself.
+> The bridge only exists while some MCP client is running the server. Without one, **Send to AI** and the `[DOM]` commands still work, because they don't use MCP; the DOM Inspector output channel just logs that the MCP POST failed. For testing, run `pnpm bundle-mcp && node mcp-server/index.js` yourself.
 
 ### What the server exposes
 
@@ -529,7 +539,7 @@ The suite uses vitest (some suites with fast-check), with `vscode` aliased to a 
 ### Debugging tips
 
 - The sidebar footer shows which build is running (`v<version>`, plus `(dev)` from source). Check it first when a change doesn't seem to apply.
-- The sidebar's **Console** tab logs every bridge message, source-mapper result and MCP POST.
+- **Output → DOM Inspector** logs every bridge message, source-mapper result and MCP POST, with timestamps.
 - **Output → DOM Inspector** shows activation and MCP-config messages.
 - **Developer: Open Webview Developer Tools** shows `[webview]` and `[dom-inspector]` console logs from the browser panel and the page.
 - `curl http://127.0.0.1:3100/selection` shows exactly what the AI will see.
@@ -545,7 +555,7 @@ The suite uses vitest (some suites with fast-check), with `vscode` aliased to a 
 | Page loads but picking does nothing | The page isn't HTML served through the proxy (e.g. you navigated to an absolute URL on another origin). Reload from the toolbar, or reopen the URL. |
 | "Could not find source for <tag>" | None of the five strategies matched. Add a `data-source="path:line"` attribute or a unique id or test id, and check the source lives in the **first** workspace folder. |
 | The wrong file opens | Without React 19 owner stacks, several files sharing the component's name (e.g. many `index.tsx`) are ranked by how well they contain the element, which can still guess wrong. Add a `data-source` hint. |
-| Nothing appears in the assistant after **Send to AI** | Check which assistant is used (**DOM Inspector: Choose AI Assistant…**) and the Console tab. Some chats only accept context while their panel has an open conversation. If delivery fails, the context is on your clipboard. |
+| Nothing appears in the assistant after **Send to AI** | Check which assistant is used (**DOM Inspector: Choose AI Assistant…**) and **Output → DOM Inspector**. Some chats only accept context while their panel has an open conversation. If delivery fails, the context is on your clipboard. |
 | `[DOM] Apply styles` says "No style changes recorded" | Changes are cleared every time you pick a new element. Pick the element, edit in Styles, then run the command. |
 | "Inspector connection lost — waiting for page reload…" shows a few seconds after every load | A known false alarm: the page only sends one ready signal, so the 5-second heartbeat always times out. Picking still works. |
 | A change doesn't show up after reinstalling | The editor is still running the old build: the sidebar footer shows the old version, or none (builds before 0.7.5). Fully quit and restart the editor; reloading the window isn't enough. |
@@ -563,7 +573,8 @@ The main ones are below. The full list, with root causes, is in [PRODUCT.md → 
 - **Keyboard shortcuts inside native browsers.** A browser view that has focus may swallow `Ctrl+Shift+I`. Use the sidebar's inspect button or right-click → **Inspect element** instead.
 - **Delivery depends on each assistant's command.** The built-in targets use commands checked against each tool's current code, but extensions rename commands. If one stops working, choose another target or use the `custom` command and clipboard fallbacks.
 - **MCP auto-setup covers only the editor's own AI** (Kiro, Cursor, VS Code). Other tools need **Set Up MCP for AI Tools…** once.
-- **Leaving the proxy.** Navigating to absolute URLs on another origin leaves the proxy, and the inspector stops working there.
+- **Leaving the proxy.** Navigating to absolute URLs on another origin leaves the proxy, and the inspector stops working there. (Pages attached in Cursor's browser aren't proxied and keep working across navigation.)
+- **Attached pages keep their own security headers.** A page attached in Cursor's browser isn't proxied, so a strict `Content-Security-Policy` (`connect-src`) can block the inspector's channel. Use **Open URL** for such pages; the proxy removes the CSP.
 
 ---
 
@@ -571,7 +582,8 @@ The main ones are below. The full list, with root causes, is in [PRODUCT.md → 
 
 DOM Inspector is a **local development tool**. Don't point it at sites you don't trust, and don't run it on shared machines without reading this.
 
-- The proxy listens on `127.0.0.1` only. It **removes CSP and X-Frame-Options** from every response it forwards and injects a script into every HTML page. Its inspector channel (`/__dom-inspector__/…`) requires a random per-session token embedded in that script, so other local pages can't drive or impersonate the inspector without first loading a proxied page.
+- The proxy listens on `127.0.0.1` only. It **removes CSP and X-Frame-Options** from every response it forwards and injects a script into every HTML page. Its inspector channel (`/__dom-inspector__/…`) requires a random per-session token embedded in that script, so other local pages can't drive or impersonate the inspector without it. The channel answers cross-origin requests (CORS), because pages attached in Cursor's browser reach it from their own origin; the token is still required for every request.
+- Attaching to Cursor's browser injects the inspector into that tab's page (and its later page loads) until you reload the window or close the tab.
 - The MCP HTTP bridge listens on `127.0.0.1:3100` with **no authentication and CORS that reflects any origin**. Any website open in your normal browser could read the current selection or overwrite it, and whatever it writes ends up in AI prompts. Treat the selection as untrusted input.
 - The MCP server never kills other processes. When its port is taken, it either shares the existing DOM Inspector bridge or reports the conflict.
 - **Send to AI** writes element snapshots (page HTML, text, styles, source excerpts) to `<workspace>/.dom-inspector/`, which ignores itself in git. What the assistant does with them, including sending them to its model provider, is up to that assistant.

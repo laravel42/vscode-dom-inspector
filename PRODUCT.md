@@ -2,7 +2,7 @@
 
 This document describes what DOM Inspector is for, how it is built, and where it is going. Both the extension and this document are **IDE- and AI-provider-agnostic**, and the document is self-sufficient: an engineer, or an LLM, should be able to rebuild or extend the system for any VS Code–based IDE (VS Code, Kiro, Cursor, Windsurf…) from this document alone.
 
-It was written against the working tree of **2026-11-08** and updated for the **2026-11-13** reorganisation: one package, `dom-inspector` **0.7.0**, whose MCP server reports version **1.1.0**. Where behaviour differs from intent, the [Known gaps and limitations](#known-gaps-and-limitations) section says so explicitly. For installation and day-to-day usage, see [README.md](README.md).
+It was written against the working tree of **2026-11-08** and updated for the **2026-11-13** reorganisation and release: one package, `dom-inspector` **0.7.21**, whose MCP server reports version **1.1.0**. Where behaviour differs from intent, the [Known gaps and limitations](#known-gaps-and-limitations) section says so explicitly. For installation and day-to-day usage, see [README.md](README.md).
 
 The system has two programs, built from one package (all source in `src/`):
 
@@ -76,9 +76,11 @@ AI coding assistants make the gap wider. They are good at editing source, but th
 | Capability | Status | Notes |
 |---|---|---|
 | Inspected page in any browser via reverse proxy | ✅ Shipped | VS Code integrated browser, Cursor browser tab, Simple Browser, the DOM Inspector panel, or the system browser (`domInspector.browser`). HTTP(S) upstream, redirect rewriting, decompression, WebSocket tunnelling (HMR), deep links. |
-| URL history omnibox | ✅ Shipped | 50 entries persisted in `globalState`. |
+| URL history | ✅ Shipped | 50 entries persisted in `globalState`, offered by the **Open URL** prompt (the sidebar omnibox was removed). |
+| Inspect the page open in Cursor's browser | ✅ Shipped | No URL, no proxy in front of the page: the inspector is injected through Cursor's internal `cursor.browserView.*` commands and re-injected on reloads. |
+| Detach from current page | ✅ Shipped | Removes the inspector from the page completely and releases the browser (panel, proxy, Cursor-tab injection). |
 | Hover overlays and tooltip | ✅ Shipped | |
-| Pick → resolve source → open and highlight | ✅ Shipped | Five-strategy chain. React 19 owner stacks + source maps give exact lines (100% on the test app); 90% without them. |
+| Pick → resolve source | ✅ Shipped | Five-strategy chain; the `file:line` feeds the breadcrumb, MCP and Send to AI (selecting doesn't open the file). React 19 owner stacks + source maps give exact lines (100% on the test app); 90% without them. |
 | Framework component info | ✅ Shipped | Detected from rendered DOM, not devtools hooks. React reports the owning component; Vue, Svelte and Angular are probed per element. |
 | Picking accuracy (keyboard navigation, SVG promotion, layers) | ✅ Shipped | ↑/↓ parent/child, ←/→ layers under the cursor, Enter to pick. |
 | Right-click menu → Send to AI / Send to… / Copy as Markdown / Inspect | ✅ Shipped | Markdown snapshot delivered through the assistant's own command: Claude Code, Cursor Chat, Kiro, Copilot Chat, Cline, Roo Code, Continue, a custom command, or the clipboard. |
@@ -100,7 +102,7 @@ AI coding assistants make the gap wider. They are good at editing source, but th
 ### J1: "Where is this in the code?"
 1. Run **Open URL** with the dev server URL; the page renders in an editor tab.
 2. Run **Inspect Element** (or press the toolbar button), hover, and click the element.
-3. The source file opens in column two with the element's whole tag range selected and highlighted for 10 s. The status bar shows `App > … > Component`.
+3. The sidebar shows the element (Styles, Computed, tree) and the status bar shows `App > … > Component`; clicking a component opens its file. The resolved `file:line` goes into AI snapshots and the MCP selection (selecting doesn't open the file).
 
 **Success:** the right file and line, under 3 s, with no manual search.
 
@@ -137,7 +139,7 @@ AI coding assistants make the gap wider. They are good at editing source, but th
 │  │  ┌──────────────────┐  │            │  BridgeChannel  (panel.ts)  │   │ Elements       │  │
 │  │  │ <iframe>         │  │            │  SourceMapper   (source-…)  │   │ Styles         │  │
 │  │  │  user's page     │  │            │  ComponentBreadcrumb        │   │ Computed       │  │
-│  │  │  + inspector.js  │  │            │  Reverse proxy  (proxy.ts) ─┼─┐ │ Console        │  │
+│  │  │  + inspector.js  │  │            │  Reverse proxy  (proxy.ts) ─┼─┐ │                │  │
 │  │  │    (injected)    │  │            └──────────────┬──────────────┘ │ └────────────────┘  │
 │  │  └────────▲─────────┘  │                           │                │                     │
 │  └───────────┼────────────┘                           │                │                     │
@@ -159,7 +161,7 @@ AI coding assistants make the gap wider. They are good at editing source, but th
 | Piece | Runs in | Listens on | Lifetime |
 |---|---|---|---|
 | Extension host code | IDE extension host (Node) | — | Activated on first command or sidebar open. |
-| Reverse proxy | Extension host | `127.0.0.1:<OS-assigned>` | Started on first Open URL; stopped when the browser panel closes. |
+| Reverse proxy | Extension host | `127.0.0.1:<OS-assigned>` | Started on first Open URL, or on attach to a Cursor browser tab (where it only hosts the page channel); stopped on detach, or when the panel closes while it's the current browser. |
 | Browser view | VS Code integrated browser / Cursor browser tab / Simple Browser / DOM Inspector panel / system browser | — | Chosen per Open URL (`domInspector.browser`); the panel is reused across calls. |
 | Inspector script | The proxied page, inside the iframe | `window` `message` events | Re-injected on every HTML document load. |
 | Sidebar | Webview view | — | While the view is resolved. |
@@ -195,7 +197,10 @@ On activation (`activate()`), the extension:
 | Command ID | Title | Keybinding (win/linux · mac) | Handler |
 |---|---|---|---|
 | `domInspector.openUrl` | DOM Inspector: Open URL | `ctrl+shift+u` · `cmd+shift+u` | `openUrl()` |
-| `domInspector.inspectElement` | DOM Inspector: Inspect Element | `ctrl+shift+i` · `cmd+shift+i` | `activateInspection()` |
+| `domInspector.inspectElement` | DOM Inspector: Inspect Element | `ctrl+shift+i` · `cmd+shift+i` | `activateInspection()`: attaches to the Cursor browser tab first when no page is connected |
+| `domInspector.inspectBrowserTab` | DOM Inspector: Inspect Cursor Browser Tab | — | `inspectBrowserTab()` |
+| `domInspector.detach` | DOM Inspector: Detach from Current Page | — | `detachFromPage()` |
+| `domInspector.chooseBrowser` | DOM Inspector: Choose Browser… | — | `chooseBrowser()` |
 | `domInspector.selectNode` | [DOM] Send element to AI | — | `runElementTask("select")` |
 | `domInspector.analyzeNode` | [DOM] Analyze element (a11y, locators) | — | `runElementTask("analyze")` |
 | `domInspector.applyStyles` | [DOM] Apply style edits to source | — | `runElementTask("apply-styles")` |
@@ -228,13 +233,12 @@ Module-level state: `browserPanel`, `bridge`, `urlHistory` (max 50), `currentPag
 | *connection lost / restored* | Show a status-bar warning, then a "reconnected" message for 3 s. |
 
 **`handleElementPicked(element)`**:
-1. `SourceMapper.resolve(element, firstWorkspaceFolder)`.
-2. If found: `openSourceFile(path, line)`. Otherwise show the warning "Could not find source for <tag> "…"".
-3. Update the sidebar (element, children, expand to `cssSelectorPath`).
-4. Build the breadcrumb from `componentInfo.componentPath`: segments are `{ name, sourceFile }`, and only the owning component's segment (or, failing that, the leaf) gets a `sourceFile`.
-5. `publishSelection()` (`ai/mcp.ts`): fire-and-forget `POST http://127.0.0.1:3100/selection` with a 2 s timeout. See [Contract](#contract-between-the-packages).
+1. Update the sidebar straight away (element, children, expand to `cssSelectorPath`). Selecting an element doesn't open its source file and doesn't warn when no source is found.
+2. `SourceMapper.resolve(element, firstWorkspaceFolder)` in the background; the result is logged to the output channel.
+3. Build the breadcrumb from `componentInfo.componentPath`: segments are `{ name, sourceFile }`, and only the owning component's segment (or, failing that, the leaf) gets a `sourceFile`.
+4. Remember the pick for the `[DOM]` commands, then `publishSelection()` (`ai/mcp.ts`): fire-and-forget `POST http://127.0.0.1:3100/selection` with a 2 s timeout. See [Contract](#contract-between-the-packages).
 
-**`openSourceFile(path, line)`** (`source/editor.ts`): opens in `ViewColumn.Two`. `findClosingTagLine()` extends the selection from the opening line to the matching close, using these rules:
+**`openSourceFile(path, line)`** (`source/editor.ts`), now used only by the component breadcrumb, opens in `ViewColumn.Two`. `findClosingTagLine()` extends the selection from the opening line to the matching close, using these rules:
 - A trailing `/>` on the same line counts as self-closing.
 - A multi-line self-closing tag is detected by finding `/>` before the opening tag's `>`.
 - Otherwise it counts `<Tag` opens minus self-closes minus `</Tag>` closes until the depth returns to ≤ 0, scanning up to 200 lines.
@@ -298,6 +302,40 @@ If opening fails, the page opens in the panel and you're warned.
 - `sendToPage` goes to the client that spoke last, or to all clients.
 - Connection lost/restored follow the number of open SSE streams, which avoids the panel heartbeat's false alarm.
 - Switching browsers disposes the other transport. Closing the panel only stops the proxy when the panel is the current browser.
+
+**Attaching to the page open in Cursor's browser (`browser/cursor-browser.ts`).** Here the page isn't loaded through the proxy at all. Cursor exposes its browser to extensions through internal, undocumented workbench commands, the ones its own agent tools use:
+
+| Command | Used for |
+|---|---|
+| `cursor.browserView.listTabs()` | `{ tabs, activeTab, lastInteractedTab }`; `pickTab()` takes the visible tab, then the last used, then any |
+| `cursor.browserView.getURL(viewId)` | the tab's URL; only `http(s)` pages are attached |
+| `cursor.browserView.executeJavaScript(code, viewId)` | run the inspector in the current document |
+| `cursor.browserView.sendCDPCommand(method, params, viewId)` | `Page.addScriptToEvaluateOnNewDocument`, so the inspector is re-injected on reloads and navigation, and `Page.removeScriptToEvaluateOnNewDocument` on detach |
+
+`cursorBrowserAvailable()` checks that all four exist; the start-screen button and the attach command only appear or work when they do. Tabs opened by Cursor's agent belong to it and aren't listed.
+
+`attachToCursorBrowser()` does the following:
+1. Switches to the HTTP page channel and starts the proxy, which here only hosts the channel.
+2. Injects `inspectorScript(proxyOrigin())`. `__DI_BASE__` is replaced by the proxy's origin, so the page reaches the channel cross-origin. For proxied pages it stays empty (same origin).
+
+Two details follow from injecting both immediately and on new documents:
+- The script runs once per page and session: it records the token in `window.__domInspectorToken` and returns if it's already set.
+- A tab still running an older session's inspector is reloaded, so only the new one runs.
+
+**Inspect Element** attaches automatically when no page is connected. If the page doesn't connect within 4 s, it warns and points to Output → DOM Inspector.
+
+**CORS on the page channel.** Pages attached in Cursor's browser call the channel from their own origin. So every channel response carries:
+- `Access-Control-Allow-Origin: *`
+- `Access-Control-Allow-Private-Network: true`
+- an answer to `OPTIONS` preflights
+
+Access is still gated by the session token; the headers only let the browser make the request.
+
+**Detach (`detachFromPage()`)**:
+1. Sends `detach` to the page. The inspector removes every listener it registered, closes its `EventSource`, removes overlays, the right-click menu and the selection outline, and forgets its token. Live style edits stay; they're the user's.
+2. Removes the Cursor tab's on-new-document script.
+3. Disposes the transport and closes the panel. The proxy stops 300 ms later, giving the page time to receive `detach`.
+4. Clears the pick, the recorded style edits and the breadcrumb, and returns the sidebar to its start screen.
 
 ### Browser panel webview (`browser/panel.ts`)
 
@@ -493,19 +531,20 @@ The `BridgeMessage` union (`types.ts`):
 | page → host | `inspector_ready` | — | ready → heartbeat + bootstrap |
 | page → host | `send_to_ai` | `data: ElementData`, `target: primary \| pick \| clipboard` | right-click menu → `sendElementToAi` |
 | host → page | `ai_targets` | `primary` (label) | `pushAiTargetToPage()` → context-menu label |
+| host → page | `detach` | — | `detachFromPage()` → `detachInspector()` removes the inspector from the page |
 
 ### Sidebar (`ui/sidebar.ts`, `webview/sidebar.*`)
 
 `InspectorSidebarProvider` (`viewType = "domInspector.inspectorSidebar"`) renders one HTML document assembled from `webview/sidebar.html`, `sidebar.css` (themed with `--vscode-*` tokens on a 4 px spacing grid) and `sidebar.js`.
 
 **Layout**
-- **URL omnibox**: an input with a dropdown. Focus shows the 10 most recent URLs, typing filters with the matched text highlighted, ↑/↓/Enter/Escape work, and selecting posts `open_url_direct`.
-- **Empty state** until the browser opens.
-- **DevTools bar**: an inspect toggle and tabs **Elements | Styles | Computed | Console**.
+- **Start screen** until a page connects: **Inspect the page open in Cursor's browser** (Cursor only, `attach_available`) and **Open URL…**.
+- **Bottom bar**: **Detach from current page** (shown while a page is connected; posts `detach`) and the build stamp.
+- **DevTools bar**: an inspect toggle and tabs **Elements | Styles | Computed**.
 - **Elements**: `#dom-tree`. Clicking a row toggles it and selects the element (`select_node` → `inspect_node` in the page → a pick that skips the "no source" warning); the ▶ arrow only toggles. Revealing a selection expands its ancestors, never the node itself.
 - **Styles**: `#active-styles`.
 - **Computed**: `#computed-box-model` and `#computed-styles`.
-- **Console**: `#debug-log` (timestamped lines).
+- Diagnostic lines don't go to the webview: `InspectorSidebarProvider.log()` hands them to the logger passed in by `extension.ts`, which writes them, timestamped, to the **DOM Inspector** Output channel.
 
 **Host → webview messages**
 
@@ -517,9 +556,7 @@ The `BridgeMessage` union (`types.ts`):
 | `children_loaded` | `selector, children` | Inserts child rows after the parent and resumes a pending expand-to-node. |
 | `expand_to_node` | `selector` | Expands each ancestor segment, requesting children when needed, then highlights the row. |
 | `update_hover_preview` | `data` | Shows the content area (no hover summary is rendered). |
-| `debug_log` | `message` | Appends to the Console. |
 | `browser_state` | `open` | Toggles the empty state. |
-| `url_history` | `history` | Feeds the omnibox. |
 
 **Webview → host messages**
 
@@ -781,11 +818,11 @@ The port is **3100 on both sides**. The server honours `DOM_INSPECTOR_PORT`; the
 6. About 5 s later the heartbeat expires and the status bar shows "connection lost" (known false positive).
 
 ### Pick an element
-1. `domInspector.inspectElement` → `start_inspector` → the page enters picking mode (cursor, capture listeners).
+1. `domInspector.inspectElement` (attaching to the Cursor browser tab first if no page is connected) → `start_inspector` → the page enters picking mode (cursor, capture listeners).
 2. On hover, rAF → overlay + tooltip → `element_hovered` → sidebar (no visible effect today).
 3. On click → `getFullData` + `getComponentInfo` → `element_picked` → the page stops picking and pins the element.
-4. The host runs `SourceMapper.resolve`. If it finds a match, the file opens in column two with the tag range selected and highlighted for 10 s.
-5. The sidebar gets `update_element`, renders active styles and computed values, and expands the tree to the element.
+4. The sidebar gets `update_element` straight away, renders active styles and computed values, and expands the tree to the element.
+5. The host then runs `SourceMapper.resolve` in the background for the breadcrumb, MCP and the `[DOM]` commands; it doesn't open the file.
 6. The breadcrumb shows the component path.
 7. `POST /selection` → the server replaces its state and resets style changes.
 
@@ -840,6 +877,8 @@ Tests use **vitest** (several suites with **fast-check**) and live in `tests/`. 
 | `ai-context.test.ts` | Snapshot Markdown content, Task section, omissions, fence safety for arbitrary HTML, @-mention-safe file names, `.gitignore` + pruning to 20 (`ai/context.ts`) |
 | `ai-targets.test.ts` | Target availability per editor and extension, `auto` ordering, explicit setting and last-used resolution, custom-arg placeholder substitution (`ai/targets.ts`) |
 | `mcp-config.test.ts` | JSON `mcpServers`/`servers` upserts that keep user fields, idempotency, refusing JSONC, Continue YAML, Codex TOML table replace, every client written into a temp workspace/home (`ai/mcp-config.ts`) |
+| `cursor-browser.test.ts` | Tab choice (visible, last used, any), http(s)-only, API detection, injection now and on new documents, once per session, reload for an older session, removal on detach (`browser/cursor-browser.ts`, against a mocked command API) |
+| `sidebar-session.test.ts` | Session replay into a re-created sidebar view, in dependency order; log lines go to the output channel, not the webview (`ui/sidebar.ts`) |
 | `page-channel.test.ts` | The proxy and HTTP page channel against a live upstream: injection, token checks, SSE delivery, client tracking (`browser/proxy.ts`, `browser/page-channel.ts`, `browser/browsers.ts`) |
 | `inspector-script.test.ts` | The script as the proxy injects it parses as JavaScript and carries the session token; stack-frame and library-URL regexes; hashed-class detection; attribute-selector escaping (`webview/inspector.js`) |
 | `sidebar-style.test.ts` | Every px spacing value in `webview/sidebar.css` is a positive integer |
@@ -857,7 +896,7 @@ The MCP server has **no tests**. There are no extension-host integration tests a
 3. **Inspector footprint markers**: `data-dom-inspector-overlay="true"`, `.dom-inspector-selected`, `#dom-inspector-cursor`, `data-dom-inspector-disabled_*`, `data-dom-inspector`. `isOverlayElement()` and the active-styles collector rely on them to ignore the inspector's own nodes and rules.
 4. **Capture-phase listeners** with `stopImmediatePropagation` are what stop clicks from reaching the app while picking.
 5. **Selectors are recomputed, not stored as node references.** Everything that crosses the bridge identifies elements by `cssSelectorPath` or `selector` and re-queries with `document.querySelector`. DOM changes between messages can therefore retarget or miss.
-6. **Every error is swallowed**, by design: framework accessors (`safeGet`), cross-origin stylesheets, grep failures and MCP POSTs. The UI never crashes, but failures only show up in the Console tab.
+6. **Every error is swallowed**, by design: framework accessors (`safeGet`), cross-origin stylesheets, grep failures and MCP POSTs. The UI never crashes, but failures only show up in Output → DOM Inspector.
 7. **Theme**: the browser panel is hard-coded dark (`#0d1117`, GitHub-dark palette). The sidebar follows VS Code theme tokens.
 8. **Webview security**: neither webview sets a Content-Security-Policy.
 
@@ -868,6 +907,8 @@ The MCP server has **no tests**. There are no extension-host integration tests a
 | Area | Behaviour | Risk | Mitigation today |
 |---|---|---|---|
 | Proxy | Binds `127.0.0.1` only; strips CSP and XFO; injects script into all HTML | Opening an untrusted site removes its CSP inside the editor | Local dev use only (documented). |
+| Page channel | `/__dom-inspector__/*` on the proxy; random per-session token in the injected script; CORS `*` and private-network preflights (for pages attached in Cursor's browser) | A page that has the token (any page the inspector was injected into) can drive the inspector or send fake picks | Token rotates per proxy session; channel paths are never forwarded upstream |
+| Cursor browser attach | Uses Cursor's internal `cursor.browserView.*` commands, including CDP and running JavaScript in the tab | Internal API: may change or disappear in any Cursor release | Feature-detected; clear warnings when unavailable |
 | Inspector ↔ relay | `postMessage('*')`, no origin checks | Other frames or scripts on the page can drive the inspector or forge `element_picked` | Low impact (dev pages). |
 | HTTP bridge | `127.0.0.1:3100`, no auth, `cors({origin:true})` | **Any website in the user's normal browser** can `GET /selection` (read page HTML and source paths) or `POST` (inject text that flows into AI prompts) | None. |
 | Port sharing | First MCP instance owns the bridge port; others follow it via `/health`. Unrelated programs are left alone | A non-DOM-Inspector program on the port makes the bridge unavailable | Clear log message; `domInspector.mcp.port` |
@@ -917,7 +958,7 @@ The MCP server has **no tests**. There are no extension-host integration tests a
 21. **AI delivery depends on third-party command IDs.** Each target uses a command verified against that tool's current code; a rename upstream breaks it until updated. The custom-command and clipboard fallbacks still work.
 22. **MCP auto-config covers only the host editor's AI** (Kiro, Cursor, VS Code). Other clients need **Set Up MCP for AI Tools…** once. Windsurf, Gemini CLI, Codex CLI and similar tools have no `Send to` target; use MCP, `custom` or the clipboard.
 23. *(Resolved: the never-registered `@dom-inspector` chat participant was removed.)*
-24. The extension contributes no user settings.
+24. **Attaching to Cursor's browser relies on internal commands** (`cursor.browserView.*`) that Cursor doesn't document, and tabs opened by Cursor's agent can't be attached. If Cursor changes them, use **Open URL** with the `cursor` or `panel` browser instead.
 
 ### Docs and tooling debt
 25. *(Resolved: the stale package README was removed; the root `README.md` is now also the marketplace page.)* Neither `package.json` license field is set (the repo `LICENSE` is MIT).
