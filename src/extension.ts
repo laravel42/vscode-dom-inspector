@@ -770,10 +770,13 @@ function recordStyleChange(selector: string, property: string, value: string): v
   publishStyleChange(change);
 }
 
-export function deactivate() {
-  if (cursorInjection) void detachFromCursorTab(cursorInjection);
+export async function deactivate(): Promise<void> {
+  const injection = cursorInjection;
+  cursorInjection = undefined;
   bridge?.dispose();
   bridge = undefined;
   breadcrumb.dispose();
   stopProxy();
+  // Awaited so the tab stops injecting this session's copy before a reload.
+  if (injection) await detachFromCursorTab(injection);
 }

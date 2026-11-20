@@ -3,7 +3,12 @@
 // (pages attached in Cursor's browser get the script both immediately and on
 // every new document).
 if (window.__domInspectorToken === '__DI_TOKEN__') return;
+// A copy from an earlier editor session hands over to this one. Cursor keeps a
+// tab's on-new-document scripts across Reload Window, so every session's copy
+// runs on each page load, oldest first; the newest must be the one that stays.
+if (typeof window.__domInspectorDetach === 'function'){ try{ window.__domInspectorDetach(); }catch(e){} }
 window.__domInspectorToken = '__DI_TOKEN__';
+window.__domInspectorDetach = function(){ detachInspector(); };
 // ---------------------------------------------------------------------------
 // OverlayRenderer
 // ---------------------------------------------------------------------------
@@ -727,7 +732,7 @@ function channelUrl(route){ return DI_CHANNEL + route + '?t=' + encodeURICompone
 var diListeners = [];
 var diEventSource = null;
 var diDetached = false;
-function diOn(target, type, fn, opts){ target.addEventListener(type, fn, opts); diListeners.push([target, type, fn, opts]); }
+function diOn(target, type, fn, opts){ if (diDetached) return; target.addEventListener(type, fn, opts); diListeners.push([target, type, fn, opts]); }
 
 function postToParent(msg){
   if (diDetached) return;
@@ -981,7 +986,9 @@ function onContextMenu(e){
 }
 
 function initContextMenu(){
-  diOn(document, 'contextmenu', onContextMenu, true);
+  // On window, capturing: it runs before any document-level handler, including
+  // those of older copies (before 0.7.25) that can't hand over.
+  diOn(window, 'contextmenu', onContextMenu, true);
   diOn(document, 'mousedown', function(e){ if(ctxMenu && !isOverlayElement(e.target)) hideContextMenu(); }, true);
   diOn(document, 'keydown', function(e){ if(e.key === 'Escape' && ctxMenu && ctxMenu.style.display !== 'none'){ e.preventDefault(); e.stopPropagation(); hideContextMenu(); } }, true);
   diOn(window, 'scroll', hideContextMenu, true);
@@ -1005,10 +1012,12 @@ function detachInspector(){
   var nodes = document.querySelectorAll('[data-dom-inspector-overlay="true"]');
   for (var n = 0; n < nodes.length; n++) if (nodes[n].parentNode) nodes[n].parentNode.removeChild(nodes[n]);
   try{ delete window.__domInspectorToken; }catch(e){ window.__domInspectorToken = undefined; }
+  try{ delete window.__domInspectorDetach; }catch(e){ window.__domInspectorDetach = undefined; }
   console.log('[dom-inspector] detached');
 }
 
 function initInspector(){
+  if (diDetached) return;   // replaced by a newer copy before the page finished loading
   connectChannel();
   initContextMenu();
 
@@ -1032,7 +1041,7 @@ function initInspector(){
 }
 
 if(document.readyState === 'loading'){
-  document.addEventListener('DOMContentLoaded', initInspector);
+  diOn(document, 'DOMContentLoaded', initInspector);
 } else {
   initInspector();
 }

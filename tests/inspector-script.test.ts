@@ -130,3 +130,27 @@ describe('channel base', () => {
     expect(() => new vm.Script(attached)).not.toThrow();
   });
 });
+
+describe('copies from earlier sessions', () => {
+  // Cursor keeps a tab's on-new-document scripts across Reload Window, so each
+  // session's copy runs on every page load, oldest first.
+  it('a newer copy replaces an older one before the page finishes loading', () => {
+    const listeners: [string, unknown][] = [];
+    const document = {
+      readyState: 'loading',
+      addEventListener: (type: string, fn: unknown) => listeners.push([type, fn]),
+      removeEventListener: (type: string, fn: unknown) => {
+        const i = listeners.findIndex(([t, f]) => t === type && f === fn);
+        if (i >= 0) listeners.splice(i, 1);
+      },
+      querySelectorAll: () => [],
+    };
+    const window: Record<string, unknown> = { document };
+    const ctx = vm.createContext({ window, document, console: { log() {}, warn() {}, error() {} } });
+    vm.runInContext(inspectorScript('').split(channelToken()).join('earlier-session'), ctx);
+    vm.runInContext(inspectorScript(''), ctx);
+
+    expect(window.__domInspectorToken).toBe(channelToken());
+    expect(listeners.map(([type]) => type)).toEqual(['DOMContentLoaded']);   // only the newer copy will start
+  });
+});
