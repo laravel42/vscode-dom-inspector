@@ -35,33 +35,13 @@ export interface ComputedStyleData {
 }
 
 // ---------------------------------------------------------------------------
-// Component & Source Information
+// Component Information
 // ---------------------------------------------------------------------------
 
 export interface ComponentInfo {
   framework: FrameworkType;
-  componentName: string;
-  componentPath: string[];     // Ancestor chain, e.g. ['App', 'Layout', 'Header', 'NavButton']
-  sourceFile: string | null;   // Original path from framework debug info (React ≤18 _debugSource, Svelte, Vue __file)
-  sourceLine: number | null;
-  // Where the element's JSX was created, as a location in the *served* module
-  // (React 19 owner stacks). Mapped back to source by the extension host.
-  stackUrl?: string | null;
-  stackLine?: number | null;
-  stackColumn?: number | null;
-}
-
-export interface ComponentPathEntry {
-  name: string;
-  sourceFile: string | null;
-}
-
-
-export interface SourceLocation {
-  filePath: string;          // Workspace-relative path
-  line: number;              // 1-based line number
-  column?: number;           // 1-based column (when available from source maps)
-  strategy: 'stack' | 'sourcemap' | 'framework' | 'attribute' | 'grep';
+  componentName: string;       // The component that rendered the element (React: its owner)
+  componentPath: string[];     // App components from the root down, e.g. ['App', 'Layout', 'Header', 'NavButton']
 }
 
 // ---------------------------------------------------------------------------

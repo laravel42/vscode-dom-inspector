@@ -1,7 +1,7 @@
 {
   "name": "dom-inspector",
   "displayName": "DOM Inspector",
-  "description": "Pick DOM elements in an embedded browser, jump to their source, and hand them to any AI assistant (Claude Code, Cursor, Copilot, Kiro, Cline, Roo Code, Continue, MCP clients…)",
+  "description": "Pick DOM elements in your running app and send them, with their component, selectors, styles and HTML, to any AI assistant (Claude Code, Cursor, Copilot, Kiro, Cline, Roo Code, Continue, MCP clients…)",
   "version": "0.7.21",
   "publisher": "L42",
   "repository": {
@@ -117,7 +117,7 @@
             "DOM Inspector’s own panel, with a reload and inspect toolbar.",
             "Your system browser (Chrome, Firefox…). The inspector still talks to the editor."
           ],
-          "markdownDescription": "Where **Open URL** shows the page. Every option loads the page through DOM Inspector’s local proxy, so inspection, jump-to-source and Send to AI work the same everywhere."
+          "markdownDescription": "Where **Open URL** shows the page. Every option loads the page through DOM Inspector’s local proxy, so inspection and Send to AI work the same everywhere."
         },
         "domInspector.ai.target": {
           "type": "string",

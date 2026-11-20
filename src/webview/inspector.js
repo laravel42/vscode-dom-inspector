@@ -559,30 +559,21 @@ function reactFiberFor(el){
 
 function reactInfo(el){
   var fiber = reactFiberFor(el); if (!fiber) return null;
-  var info = {framework:'react', componentName:null, componentPath:[], sourceFile:null, sourceLine:null, stackUrl:null, stackLine:null, stackColumn:null};
-  // 1. Where this element's JSX was written (React 19 owner stacks). Elements created inside
-  //    libraries (an icon's <svg>) walk up to the first fiber whose JSX lives in app code.
-  var f = fiber, site = null, guard = 0;
-  while (f && !site && guard++ < 300){
-    var cur = f;
+  var info = {framework:'react', componentName:null, componentPath:[]};
+  // 1. The fiber whose element was created by app code (React 19 owner stacks, read in memory
+  //    only): an icon's <svg> walks up to the <Icon/> the app rendered.
+  var f = null, site = null, w = fiber, guard = 0;
+  while (w && !site && guard++ < 300){
+    var cur = w;
     site = userFrame(safeGet(function(){ return cur._debugStack; }));
-    if (!site) f = f.return;
+    if (site) f = w; else w = w.return;
   }
-  if (site){ info.stackUrl = site.url; info.stackLine = site.line; info.stackColumn = site.column; }
-  // 2. React <= 18: _debugSource carries the original file/line.
-  var g = fiber; guard = 0;
-  while (g && guard++ < 300){
-    var gg = g;
-    var ds = safeGet(function(){ return gg._debugSource; });
-    if (ds && ds.fileName && !/\/node_modules\//.test(ds.fileName)){ info.sourceFile = ds.fileName; info.sourceLine = ds.lineNumber || null; break; }
-    g = g.return;
-  }
-  // 3. Owning component: whose render produced that element.
+  // 2. Owning component: whose render produced that element.
   var ownerSrc = f || fiber;
   var owner = safeGet(function(){ return ownerSrc._debugOwner; });
   var ownerName = owner ? (typeName(owner.type) || owner.name || null) : null;
   if (!ownerName && site && /^[A-Z]/.test(site.fn.split('.').pop())) ownerName = site.fn.split('.').pop();
-  // 4. Component path, root first, without consecutive duplicates (memo/forwardRef wrappers).
+  // 3. Component path, root first, without consecutive duplicates (memo/forwardRef wrappers).
   var path = [], h = fiber, last = null; guard = 0;
   while (h && guard++ < 1000){
     var ty = h.type;
@@ -628,7 +619,7 @@ function vueInfo(el){
       if (pn && pn !== cp[cp.length-1]) cp.push(pn);
       p = safeGet(function(){ return p.parent; });
     }
-    return {framework:'vue', componentName:name, componentPath:cp.reverse(), sourceFile:file, sourceLine:null};
+    return {framework:'vue', componentName:name, componentPath:cp.reverse()};
   }
   if (v2){
     var o = safeGet(function(){ return v2.$options; }) || {};
@@ -640,7 +631,7 @@ function vueInfo(el){
       if (qn) cp2.push(qn);
       q = safeGet(function(){ return q.$parent; });
     }
-    return {framework:'vue', componentName:nm, componentPath:cp2.reverse(), sourceFile:o.__file || null, sourceLine:null};
+    return {framework:'vue', componentName:nm, componentPath:cp2.reverse()};
   }
   return null;
 }
@@ -664,7 +655,7 @@ function svelteInfo(el){
     if (f){ var b = fileBase(f); if (b !== cp[cp.length-1]) cp.push(b); }
     a = a.parentElement;
   }
-  return {framework:'svelte', componentName:fileBase(file) || 'Unknown', componentPath:cp.reverse(), sourceFile:file, sourceLine:typeof loc.line === 'number' ? loc.line : null};
+  return {framework:'svelte', componentName:fileBase(file) || 'Unknown', componentPath:cp.reverse()};
 }
 
 function angularInfo(el){
@@ -684,7 +675,7 @@ function angularInfo(el){
   }
   cp.reverse();
   if (cp[cp.length-1] !== nm) cp.push(nm);
-  return {framework:'angular', componentName:nm, componentPath:cp, sourceFile:null, sourceLine:null};
+  return {framework:'angular', componentName:nm, componentPath:cp};
 }
 
 var FrameworkDetector = (function(){

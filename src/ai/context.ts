@@ -4,8 +4,9 @@ import { ActiveStyleRule, ElementData } from "../types";
 
 /**
  * Provider-neutral element context: a Markdown snapshot of a picked element
- * (source excerpt, identity, attributes, matched CSS, computed styles, HTML,
- * and an optional task). Snapshots are written to disk so any AI tool can read
+ * (identity, DOM path, attributes, matched CSS, computed styles, HTML, and an
+ * optional task). DOM Inspector doesn't read the project's source: finding the
+ * code is left to the AI assistant. Snapshots are written to disk so any AI tool can read
  * them: via an @-mention, an attached file, MCP, or the clipboard
  * (see ai-targets.ts).
  */
@@ -17,31 +18,11 @@ const MAX_RULES = 30;
 const MAX_COMPUTED = 60;
 const MAX_HTML = 2000;
 
-export interface SourceSnippet {
-  filePath: string;      // workspace-relative
-  startLine: number;     // 1-based
-  endLine: number;       // 1-based, inclusive
-  strategy: string;
-  code: string;
-}
-
 export interface ElementMarkdownOptions {
   pageUrl: string;
   pickedAt: string;      // ISO 8601
-  source: SourceSnippet | null;
   /** What the AI should do with the element (Markdown). Omitted for plain "send". */
   task?: string;
-}
-
-const LANG_BY_EXT: Record<string, string> = {
-  ".tsx": "tsx", ".jsx": "jsx", ".ts": "ts", ".js": "js", ".vue": "vue",
-  ".svelte": "svelte", ".astro": "astro", ".html": "html", ".erb": "erb",
-  ".hbs": "handlebars", ".ejs": "ejs", ".pug": "pug", ".php": "php",
-  ".twig": "twig", ".njk": "jinja", ".mustache": "mustache",
-};
-
-export function languageForFile(filePath: string): string {
-  return LANG_BY_EXT[path.extname(filePath).toLowerCase()] ?? "";
 }
 
 /** Fenced code block whose fence is longer than any backtick run in the body. */
@@ -87,21 +68,10 @@ export function buildElementMarkdown(el: ElementData, opts: ElementMarkdownOptio
   out.push(`# DOM element \`<${label}>\``);
   out.push("");
   out.push(`Picked with DOM Inspector on ${opts.pageUrl} at ${opts.pickedAt}.`);
-  out.push("This is a snapshot of the live element in the running app; edit the source file below to change it.");
+  out.push("This is a snapshot of the live element in the running app. To change it, find the code that renders it using the component, selectors, classes and text below.");
 
   if (opts.task && opts.task.trim()) {
     out.push("", "## Task", "", opts.task.trim());
-  }
-
-  // Source
-  out.push("", "## Source");
-  if (opts.source) {
-    const s = opts.source;
-    const range = s.endLine > s.startLine ? `lines ${s.startLine}-${s.endLine}` : `line ${s.startLine}`;
-    out.push("", `\`${s.filePath}\` ${range} (resolved via ${s.strategy}; may be approximate)`);
-    if (s.code.trim()) out.push("", fence(languageForFile(s.filePath), s.code));
-  } else {
-    out.push("", "Not resolved automatically. Search the codebase using the selector, classes, or text below.");
   }
 
   // Identity

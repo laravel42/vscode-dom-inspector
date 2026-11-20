@@ -379,7 +379,7 @@
 
     // Clicking the row expands/collapses it and selects the element: the row is
     // marked at once, and the extension inspects it in the page (Styles,
-    // Computed, source) — like picking it.
+    // Computed) — like picking it.
     row.addEventListener("click", () => {
       toggleRow();
       highlightNode(child.selectorPath);

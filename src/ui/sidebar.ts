@@ -107,8 +107,8 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
   /* ------------------------------------------------------------------ */
 
   /** Render full element details in the sidebar. */
-  updateElement(data: ElementData, sourceFile?: string): void {
-    this.postMessage({ type: "update_element", data, sourceFile: sourceFile || "" });
+  updateElement(data: ElementData): void {
+    this.postMessage({ type: "update_element", data });
   }
 
   /** Render / refresh the DOM tree with the given root children. */
@@ -136,7 +136,7 @@ export class InspectorSidebarProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: "update_hover_preview", data });
   }
 
-  /** Diagnostic log line (bridge messages, source lookups, MCP posts…), to the logger. */
+  /** Diagnostic log line (bridge messages, AI hand-offs, MCP posts…), to the logger. */
   log(message: string): void {
     this.logger(message);
   }

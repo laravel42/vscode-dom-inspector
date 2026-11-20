@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as http from "http";
 import * as os from "os";
 import * as path from "path";
-import type { ElementData, SourceLocation } from "../types";
+import type { ElementData } from "../types";
 import { MCP_CLIENTS, McpServerSpec, applyMcpConfig, hostMcpClient } from "./mcp-config";
 
 /**
@@ -103,7 +103,6 @@ export interface StyleChange { selector: string; property: string; oldValue: str
  */
 export function publishSelection(
   element: ElementData,
-  source: SourceLocation | null,
   pageUrl: string,
   log?: (message: string) => void,
 ): void {
@@ -127,10 +126,6 @@ export function publishSelection(
   const ariaLabel = element.attrs?.["aria-label"];
   if (role) payload.role = role;
   if (ariaLabel) payload.ariaLabel = ariaLabel;
-
-  if (source) {
-    payload.title = `${source.filePath}:${source.line}`;
-  }
 
   const body = JSON.stringify(payload);
   const port = mcpPort();

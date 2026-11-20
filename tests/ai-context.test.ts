@@ -7,7 +7,6 @@ import {
   buildElementMarkdown,
   elementLabel,
   fence,
-  languageForFile,
   snapshotFileName,
   writeSnapshot,
 } from '../src/ai/context';
@@ -37,7 +36,7 @@ function makeElement(overrides: Partial<ElementData> = {}): ElementData {
     xpath: '/html/body/div/button',
     cssSelectorPath: 'html > body > div#root > button#save',
     allComputedStyles: { all: { color: 'rgb(255, 255, 255)', display: 'inline-block' }, nonDefault: { color: 'rgb(255, 255, 255)', '-webkit-foo': 'x' } },
-    componentInfo: { framework: 'react', componentName: 'SaveButton', componentPath: ['App', 'Toolbar', 'SaveButton'], sourceFile: null, sourceLine: null },
+    componentInfo: { framework: 'react', componentName: 'SaveButton', componentPath: ['App', 'Toolbar', 'SaveButton'] },
     activeStyles: [
       { selector: 'element.style', properties: [{ property: 'margin', value: '4px', enabled: true, editable: true }] },
       { selector: '.btn', properties: [
@@ -52,15 +51,11 @@ function makeElement(overrides: Partial<ElementData> = {}): ElementData {
 const opts = { pageUrl: 'http://localhost:5173/', pickedAt: '2026-11-09T10:00:00.000Z' };
 
 describe('buildElementMarkdown', () => {
-  it('includes identity, component path, source snippet, rules, computed styles and HTML', () => {
-    const md = buildElementMarkdown(makeElement(), {
-      ...opts,
-      source: { filePath: 'src/SaveButton.tsx', startLine: 12, endLine: 14, strategy: 'framework', code: '<button\n  id="save"\n/>' },
-    });
+  it('includes identity, component path, rules, computed styles and HTML, and no source section', () => {
+    const md = buildElementMarkdown(makeElement(), opts);
     expect(md).toContain('# DOM element `<button#save.btn.btn-primary>`');
     expect(md).toContain('http://localhost:5173/');
-    expect(md).toContain('`src/SaveButton.tsx` lines 12-14 (resolved via framework');
-    expect(md).toContain('```tsx\n<button\n  id="save"\n/>\n```');
+    expect(md).not.toContain('## Source');
     expect(md).toContain('- **CSS path:** `html > body > div#root > button#save`');
     expect(md).toContain('- **Component:** App > Toolbar > SaveButton (react)');
     expect(md).toContain('- **Text:** "Save changes"');
@@ -75,20 +70,19 @@ describe('buildElementMarkdown', () => {
   });
 
   it('puts the task right after the header when given', () => {
-    const md = buildElementMarkdown(makeElement(), { ...opts, source: null, task: 'Remove this element from the source.' });
-    expect(md).toMatch(/Picked with DOM Inspector[^\n]*\n[^\n]*\n\n## Task\n\nRemove this element from the source\.\n\n## Source/);
-    expect(buildElementMarkdown(makeElement(), { ...opts, source: null })).not.toContain('## Task');
+    const md = buildElementMarkdown(makeElement(), { ...opts, task: 'Remove this element from the source.' });
+    expect(md).toMatch(/Picked with DOM Inspector[^\n]*\n[^\n]*\n\n## Task\n\nRemove this element from the source\.\n\n## Element/);
+    expect(buildElementMarkdown(makeElement(), opts)).not.toContain('## Task');
   });
 
-  it('explains how to search when the source is not resolved', () => {
-    const md = buildElementMarkdown(makeElement(), { ...opts, source: null });
-    expect(md).toContain('Not resolved automatically');
+  it('tells the assistant how to find the code', () => {
+    expect(buildElementMarkdown(makeElement(), opts)).toContain('find the code that renders it using the component, selectors, classes and text below');
   });
 
   it('omits empty sections', () => {
     const md = buildElementMarkdown(
       makeElement({ id: null, classNames: [], attrs: {}, activeStyles: [], allComputedStyles: { all: {}, nonDefault: {} }, outerSnippet: '', componentInfo: null, text: '' }),
-      { ...opts, source: null },
+      opts,
     );
     expect(md).not.toContain('## Attributes');
     expect(md).not.toContain('## Matched CSS rules');
@@ -100,7 +94,7 @@ describe('buildElementMarkdown', () => {
   it('never lets element content break out of its code fence', () => {
     fc.assert(
       fc.property(fc.string({ maxLength: 200 }), (html) => {
-        const md = buildElementMarkdown(makeElement({ outerSnippet: '<div>' + html + '</div>' }), { ...opts, source: null });
+        const md = buildElementMarkdown(makeElement({ outerSnippet: '<div>' + html + '</div>' }), opts);
         const section = md.slice(md.indexOf('## HTML'));
         const open = section.match(/\n(`{3,})html\n/);
         expect(open).not.toBeNull();
@@ -129,16 +123,10 @@ describe('fence', () => {
   });
 });
 
-describe('elementLabel / languageForFile', () => {
+describe('elementLabel', () => {
   it('formats tag#id.classes', () => {
     expect(elementLabel({ tag: 'a', id: 'x', classNames: ['b', 'c'] })).toBe('a#x.b.c');
     expect(elementLabel({ tag: 'div', id: null, classNames: [] })).toBe('div');
-  });
-  it('maps template extensions to fence languages', () => {
-    expect(languageForFile('src/App.jsx')).toBe('jsx');
-    expect(languageForFile('a/B.VUE')).toBe('vue');
-    expect(languageForFile('views/home.blade.php')).toBe('php');
-    expect(languageForFile('README')).toBe('');
   });
 });
 

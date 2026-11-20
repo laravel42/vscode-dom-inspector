@@ -5,11 +5,9 @@ import { channelToken } from "./browser/page-channel";
 import { Injection, currentCursorTab, cursorBrowserAvailable, detachFromCursorTab, injectIntoCursorTab, isInspectableUrl } from "./browser/cursor-browser";
 import { BridgeChannel, panelHtml } from "./browser/panel";
 import { BROWSER_LABELS, BrowserKind, HttpPageChannel, PageChannel, openInBrowser, resolveBrowser } from "./browser/browsers";
-import { SourceMapper } from "./source/source-mapper";
-import { openSourceFile, readSourceSnippet, workspaceRoot } from "./source/editor";
 import { InspectorSidebarProvider } from "./ui/sidebar";
 import { ComponentBreadcrumb } from "./ui/breadcrumb";
-import { BridgeMessage, ElementData, ComponentPathEntry, FullTreeNode, SourceLocation } from "./types";
+import { BridgeMessage, ElementData, FullTreeNode } from "./types";
 import {
   SNAPSHOT_DIR,
   buildElementMarkdown,
@@ -32,7 +30,6 @@ let bridge: PageChannel | undefined;
 /** Which browser is showing the page (see browser/browsers.ts). */
 let browserKind: BrowserKind | undefined;
 
-const sourceMapper = new SourceMapper();
 const breadcrumb = new ComponentBreadcrumb();
 
 let connectionLostMsg: vscode.Disposable | undefined;
@@ -48,7 +45,7 @@ let currentPageUrl = "";
 let output: vscode.OutputChannel;
 
 /** The element the [DOM] commands act on: the last one picked or sent. */
-let lastPick: { element: ElementData; source: SourceLocation | null } | null = null;
+let lastPick: { element: ElementData } | null = null;
 /** Style edits made in the sidebar since the last pick (one entry per selector+property). */
 let styleChanges: StyleChange[] = [];
 
@@ -159,13 +156,6 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Offer "inspect the page open in Cursor's browser" where that browser exists.
   cursorBrowserAvailable().then((available) => sidebarProvider.setAttachAvailable(available), () => {});
-
-  // --- Breadcrumb segment click handler ---
-  breadcrumb.onSegmentClicked((component: ComponentPathEntry) => {
-    if (component.sourceFile) {
-      openSourceFile(component.sourceFile, 1);
-    }
-  });
 
   // --- Commands ---
   context.subscriptions.push(
@@ -605,8 +595,7 @@ async function handleElementPicked(
   element: ElementData,
   sidebarProvider: InspectorSidebarProvider,
 ) {
-  // 1. Update the sidebar right away (selecting an element no longer opens its
-  //    source file, so nothing has to wait for the source lookup).
+  // 1. Update the sidebar.
   sidebarProvider.updateElement(element);
   sidebarProvider.log(`element has ${element.children?.length || 0} direct children`);
   if (element.children && element.children.length > 0) {
@@ -616,45 +605,28 @@ async function handleElementPicked(
     sidebarProvider.expandToNode(element.cssSelectorPath);
   }
 
-  // 2. Resolve the source in the background: it feeds the breadcrumb, MCP and the [DOM] commands.
-  const source = await sourceMapper.resolve(element, workspaceRoot());
-  sidebarProvider.log(`source: ${source ? source.strategy + " → " + source.filePath + ":" + source.line : "not found"}`);
-  sidebarProvider.log(`componentInfo: ${element.componentInfo ? element.componentInfo.componentName + " (framework: " + element.componentInfo.framework + ", sourceFile: " + element.componentInfo.sourceFile + ")" : "null"}`);
+  sidebarProvider.log(`componentInfo: ${element.componentInfo ? element.componentInfo.componentName + " (" + element.componentInfo.framework + ")" : "null"}`);
 
-  // 3. Update breadcrumb
-  const components: ComponentPathEntry[] = [];
-  if (element.componentInfo?.componentPath) {
-    for (const name of element.componentInfo.componentPath) {
-      components.push({ name, sourceFile: null });
-    }
-    // Enrich the owning component's entry (the one whose JSX produced this element)
-    // with the resolved source; fall back to the framework-reported file on the leaf.
-    const ownerIdx = components.map((c) => c.name).lastIndexOf(element.componentInfo.componentName);
-    if (source && ownerIdx >= 0) {
-      components[ownerIdx].sourceFile = source.filePath;
-    } else if (components.length > 0 && element.componentInfo.sourceFile) {
-      components[components.length - 1].sourceFile = element.componentInfo.sourceFile;
-    }
-  }
-  breadcrumb.show(components);
+  // 2. Show the component path in the status bar
+  breadcrumb.show(element.componentInfo?.componentPath ?? []);
 
-  // 4. Remember it for the [DOM] commands, and publish it to MCP clients
-  rememberPick(element, source);
-  publishSelection(element, source, currentPageUrl || "http://localhost", (m) => sidebarProvider.log(m));
+  // 3. Remember it for the [DOM] commands, and publish it to MCP clients
+  rememberPick(element);
+  publishSelection(element, currentPageUrl || "http://localhost", (m) => sidebarProvider.log(m));
 }
 
-function rememberPick(element: ElementData, source: SourceLocation | null): void {
+function rememberPick(element: ElementData): void {
   const sameElement = lastPick && lastPick.element.cssSelectorPath === element.cssSelectorPath;
   if (!sameElement) styleChanges = [];
-  lastPick = { element, source };
+  lastPick = { element };
 }
 
 type SendMode = "primary" | "pick" | "clipboard";
 interface ElementTask { task?: string; prompt: string }
 
 /**
- * Send an element to an AI assistant: resolve its source, write a Markdown
- * snapshot (with an optional task), and hand it to the chosen target.
+ * Send an element to an AI assistant: write a Markdown snapshot of it (with
+ * an optional task) and hand it to the chosen target.
  * Falls back to the clipboard when the target can't take it.
  */
 async function sendElementToAi(
@@ -675,18 +647,12 @@ async function sendElementToAi(
   sidebarProvider.log(`send to ${TARGET_LABELS[target]}: <${label}>`);
   sidebarProvider.updateElement(element);
 
-  const cwd = workspaceRoot();
-  const source = await sourceMapper.resolve(element, cwd);
-  sidebarProvider.log(`source: ${source ? source.strategy + " → " + source.filePath + ":" + source.line : "not found"}`);
-  const snippet = source ? await readSourceSnippet(cwd, source) : null;
-  if (source) sidebarProvider.updateElement(element, source.filePath);
-  rememberPick(element, source);
-  publishSelection(element, source, currentPageUrl || "http://localhost", (m) => sidebarProvider.log(m));
+  rememberPick(element);
+  publishSelection(element, currentPageUrl || "http://localhost", (m) => sidebarProvider.log(m));
 
   const markdown = buildElementMarkdown(element, {
     pageUrl: currentPageUrl || "http://localhost",
     pickedAt: new Date().toISOString(),
-    source: snippet,
     task: task.task,
   });
 
