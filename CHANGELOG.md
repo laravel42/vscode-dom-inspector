@@ -2,6 +2,32 @@
 
 All notable changes to DOM Inspector are documented here.
 
+## [0.7.21] — 2026-11-13
+
+Covers 0.7.15 – 0.7.21 (patch builds made while testing).
+
+### Added
+- **Inspect the page already open in Cursor's browser**, without typing a URL. **Inspect Element** attaches to it when no page is connected; **DOM Inspector: Inspect Cursor Browser Tab** (also a button on the sidebar's start screen) attaches explicitly.
+  - The inspector is injected straight into the tab, with no proxy in front, and re-injected on reloads and navigation.
+  - A tab still running an inspector from an earlier session is reloaded so only the new one runs.
+  - Only `http(s)` pages can be attached. Tabs opened by Cursor's own agent aren't visible to extensions, so they can't be attached.
+- **Detach from current page**: a full-width red button at the bottom of the sidebar, shown with the attached page's address while connected; also **DOM Inspector: Detach from Current Page**.
+  - It removes the inspector from the page completely: listeners, overlays, right-click menu, selection outline and connection.
+  - It stops re-injecting it into a Cursor browser tab, closes the panel or stops the proxy, and returns the sidebar to its start screen.
+  - Live style edits you made from the sidebar stay on the page.
+- Start screen with **Inspect the page open in Cursor's browser** (in Cursor only) and **Open URL…**.
+
+### Changed
+- The sidebar's **Console** tab is gone. Its log (bridge messages, source lookups, MCP posts) now goes to **Output → DOM Inspector**, with timestamps.
+- Selecting an element (pick, right-click → Inspect element, tree row) no longer opens its source file or warns when none is found. The sidebar updates immediately; the source is still resolved for the breadcrumb, MCP and Send to AI.
+- The URL box at the top of the sidebar is gone. **Open URL** now asks in a quick pick where you can type a URL or choose a recent one.
+- The version stamp moved into the new bottom bar, next to the attached page's address.
+- The page channel accepts cross-origin requests (CORS and private-network preflights), still gated by the session token.
+
+### Fixed
+- Selecting an element replaced its background with a faint blue tint (`!important`), which turned a page with a dark `<body>` background light as soon as DOM Inspector auto-selected `<body>`. The selection mark is now an outline only.
+- The selection mark leaked into captured data: re-selecting an element reported the mark's outline/background in its computed styles and its class in the HTML. It is now removed while the element is read.
+
 ## [0.7.14] — 2026-11-13
 
 Covers 0.7.1 – 0.7.14 (patch builds made while testing).

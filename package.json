@@ -2,7 +2,7 @@
   "name": "dom-inspector",
   "displayName": "DOM Inspector",
   "description": "Pick DOM elements in an embedded browser, jump to their source, and hand them to any AI assistant (Claude Code, Cursor, Copilot, Kiro, Cline, Roo Code, Continue, MCP clients…)",
-  "version": "0.7.14",
+  "version": "0.7.21",
   "publisher": "L42",
   "repository": {
     "type": "git",
