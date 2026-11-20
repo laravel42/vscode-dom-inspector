@@ -2,7 +2,7 @@
   "name": "dom-inspector",
   "displayName": "DOM Inspector",
   "description": "Pick DOM elements in your running app and send them, with their component, selectors, styles and HTML, to any AI assistant (Claude Code, Cursor, Copilot, Kiro, Cline, Roo Code, Continue, MCP clients…)",
-  "version": "0.7.21",
+  "version": "0.7.25",
   "publisher": "L42",
   "repository": {
     "type": "git",

@@ -2,6 +2,23 @@
 
 All notable changes to DOM Inspector are documented here.
 
+## [0.7.25] — 2026-11-20
+
+Covers 0.7.22 – 0.7.25 (patch builds made while testing).
+
+### Removed
+- **Source lookup.** DOM Inspector no longer reads your project's source: no file and line resolution (React owner stacks + source maps, framework debug info, component file names, `data-source` hints, `grep`), and no code excerpts.
+  - Send to AI snapshots and the MCP selection now carry DOM context only: component path, selectors, CSS path, XPath, attributes, text, matched CSS rules, computed styles and HTML. Finding the code is left to the AI assistant.
+  - The extension no longer needs `grep`.
+- **Opening files from the status-bar breadcrumb.** It's display only now.
+
+### Changed
+- **Component paths list the app's components only**, e.g. `SignInPage > AuthFlow > AuthCard`, instead of dozens of framework internals (`HeadManagerContext > Root > ServerRoot > AppRouter > …`) and library wrappers. React's own frames are recognised by function name, and flattened bundler chunk names (Turbopack's `node_modules__bun_….js`) count as library code.
+
+### Fixed
+- **The right-click menu broke in Cursor's browser tab after Reload Window.** It said "Send to AI" instead of the assistant's name, and its items did nothing. Cursor keeps the tab's injected inspector across window reloads, so copies from earlier sessions kept running alongside the new one, and the oldest, no longer connected to the editor, answered the right-click. A newer copy now replaces older ones in the page, its menu takes precedence over copies from earlier versions, and the extension removes its injection from the tab when it shuts down.
+- The VSIX could ship compiled files of deleted sources, because `tsc` doesn't remove outputs whose source is gone (0.7.23 still contained the removed source-lookup modules). `pnpm build` now cleans `out/` first.
+
 ## [0.7.21] — 2026-11-13
 
 Covers 0.7.15 – 0.7.21 (patch builds made while testing).
